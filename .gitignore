@@ -1,0 +1,10 @@
+node_modules
+node_moudules/*
+dist
+out
+.DS_Store
+.eslintcache
+*.log*
+
+.vscode
+.claude
