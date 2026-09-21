@@ -14,6 +14,14 @@ type OpenedProject = {
   json: string
 }
 
+/** One sample the scan found in the user's folder. */
+type ScannedSample = {
+  path: string
+  name: string
+  /** The subfolder it came from, or '' for one at the top level. */
+  category: string
+}
+
 /**
  * Renderer-facing API. Thin ipcRenderer wrappers only — no business logic and
  * no audio handling here. Keep the shape in sync with `index.d.ts`.
@@ -38,8 +46,32 @@ const api = {
     ipcRenderer.invoke('project:save', json, path),
   /** Show the open dialog and read the chosen project. Null if it was cancelled. */
   openProject: (): Promise<OpenedProject | null> => ipcRenderer.invoke('project:open'),
+  /**
+   * Read the app's own settings. An empty object when there are none, which is
+   * what a first run looks like.
+   */
+  readSettings: (): Promise<Record<string, unknown>> => ipcRenderer.invoke('settings:read'),
+  /** Write the app's settings. Separate from the project, and outlives it. */
+  writeSettings: (settings: Record<string, unknown>): Promise<void> =>
+    ipcRenderer.invoke('settings:write', settings),
+  /** Show the folder picker for the user's sample library. Null if cancelled. */
+  chooseSampleFolder: (): Promise<string | null> => ipcRenderer.invoke('samples:choose-folder'),
+  /** List the audio files in a folder, one level deep. */
+  scanSampleFolder: (folder: string): Promise<ScannedSample[]> =>
+    ipcRenderer.invoke('samples:scan-folder', folder),
   /** Ask whether unsaved changes may be discarded. */
-  confirmDiscard: (): Promise<boolean> => ipcRenderer.invoke('project:confirm-discard')
+  confirmDiscard: (): Promise<boolean> => ipcRenderer.invoke('project:confirm-discard'),
+  /**
+   * Show the save dialog for an exported mix and return the chosen path.
+   *
+   * Null if it was cancelled. Nothing is written here — the render only starts
+   * once there is a path to write it to.
+   */
+  chooseExportPath: (defaultName: string, format: 'wav' | 'mp3'): Promise<string | null> =>
+    ipcRenderer.invoke('export:choosePath', defaultName, format),
+  /** Write finished audio bytes to a path the user picked. */
+  writeExportFile: (data: Uint8Array, path: string): Promise<void> =>
+    ipcRenderer.invoke('export:writeFile', data, path)
 }
 
 // Use `contextBridge` APIs to expose Electron APIs to

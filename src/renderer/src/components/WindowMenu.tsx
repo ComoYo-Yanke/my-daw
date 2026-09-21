@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useDawStore } from '../state/useDawStore'
 import {
+  LAYOUT_PRESETS,
   selectWindowOpen,
   useWindowStore,
   windowTitle,
+  type LayoutId,
   type WindowId
 } from '../state/useWindowStore'
 
@@ -41,6 +43,7 @@ function WindowMenu(): React.JSX.Element {
 
   const toggleWindow = useWindowStore((state) => state.toggleWindow)
   const resetLayout = useWindowStore((state) => state.resetLayout)
+  const applyLayout = useWindowStore((state) => state.applyLayout)
 
   const rackOpen = useOpen('channel-rack')
   const rollOpen = useOpen('piano-roll')
@@ -84,6 +87,33 @@ function WindowMenu(): React.JSX.Element {
     }
     const channelId = pianoRollChannelId ?? channels[0]?.id
     if (channelId !== undefined) openPianoRoll(channelId)
+  }
+
+  /**
+   * Pick one of the built-in layouts.
+   *
+   * The menu closes first, because the layout is about to change underneath it.
+   *
+   * Then the roll is reconciled: whether it is open lives in `useWindowStore`,
+   * but which channel it is bound to lives in the other one, and a preset that
+   * shuts the roll has to take the binding with it. That is the same thing the
+   * roll's own × does, and for the same reason — a bound roll with no window is
+   * a panel the transport still plays to and nobody can see. Whether the roll
+   * came out open is read back from the store rather than guessed at from the
+   * preset, so the two cannot drift.
+   *
+   * Only when there was a binding to drop. `closePianoRoll` stops the transport
+   * on its way past, which is right when it is closing the roll and wrong when
+   * the roll was never open — picking a layout while the song plays would
+   * otherwise silence it for no reason.
+   */
+  const pickLayout = (id: LayoutId): void => {
+    setOpen(false)
+    const wasBound = pianoRollChannelId !== null
+    applyLayout(id)
+    if (wasBound && !selectWindowOpen(useWindowStore.getState().windows, 'piano-roll')) {
+      closePianoRoll()
+    }
   }
 
   const entries: Entry[] = [
@@ -145,6 +175,21 @@ function WindowMenu(): React.JSX.Element {
               <span>{entry.label}</span>
               {/* The tick sits where a shortcut would, so the rows line up. */}
               <span className="file-menu__check">{entry.open ? '✓' : ''}</span>
+            </button>
+          ))}
+
+          {/* Presets first and the way out last: picking a layout is the everyday
+              thing, and 重置 is what is reached for when something is lost. */}
+          {LAYOUT_PRESETS.map((preset, index) => (
+            <button
+              key={preset.id}
+              type="button"
+              role="menuitem"
+              className={index === 0 ? 'file-menu__item file-menu__item--split' : 'file-menu__item'}
+              onClick={() => pickLayout(preset.id)}
+              title={preset.hint}
+            >
+              <span>布局：{preset.label}</span>
             </button>
           ))}
 

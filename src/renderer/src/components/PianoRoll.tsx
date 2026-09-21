@@ -25,6 +25,7 @@ import {
   STEP_PX,
   STEPS_PER_BEAT,
   clampRow,
+  drawnCells,
   gridLabel,
   isBlackKey,
   noteName,
@@ -278,10 +279,18 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
   const beatSec = secondsPerBeat(bpm)
   const barSec = secondsPerBar(bpm)
   const sequenceLengthSec = sequenceSec(bpm, lengthBars)
-  const gridWidthPx = lengthBars * BEATS_PER_BAR * STEPS_PER_BEAT * stepPx
+  const barPx = stepPx * STEPS_PER_BEAT * BEATS_PER_BAR
+  const gridWidthPx = lengthBars * barPx
   const gridHeightPx = PIANO_KEY_COUNT * keyPx
-  /** One cell of the snap grid, in pixels. What the fine lines are drawn at. */
-  const cellPx = (stepPx * STEPS_PER_BEAT) / gridDivision
+  /**
+   * One cell of the *drawn* grid, in pixels.
+   *
+   * Not always the cell that is snapped to. Zoomed out far enough, the snap
+   * grid's lines would land on top of one another and the finest layer would
+   * paint the sheet a flat colour; what is drawn gives way to that, while what a
+   * note lands on keeps to `gridDivision`. See `drawnCells`.
+   */
+  const cellPx = barPx / drawnCells(gridDivision * BEATS_PER_BAR, barPx)
 
   /** Whether a drag lands on the grid: off while Alt is held, or the switch is off. */
   const snapping = useCallback((altKey: boolean): boolean => snapEnabled && !altKey, [snapEnabled])
@@ -740,8 +749,8 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
     '--pr-grid-w': `${gridWidthPx}px`,
     '--pr-grid-h': `${gridHeightPx}px`,
     '--pr-cell-w': `${cellPx}px`,
-    '--pr-beat-w': `${stepPx * STEPS_PER_BEAT}px`,
-    '--pr-bar-w': `${stepPx * STEPS_PER_BEAT * BEATS_PER_BAR}px`
+    '--pr-beat-w': `${barPx / BEATS_PER_BAR}px`,
+    '--pr-bar-w': `${barPx}px`
   } as React.CSSProperties
 
   // Bar and beat rather than seconds: it is what the ruler above the notes says,

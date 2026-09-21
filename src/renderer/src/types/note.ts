@@ -58,11 +58,17 @@ export function secondsPerStep(bpm: number): number {
  * The resolutions the piano roll's grid can be set to, as divisions of a beat.
  *
  * 4 is a 1/16 note, which is where a pattern usually starts; the finer end is
- * what lets a note be placed or held for a 1/64. This is the *snap* grid, which
+ * what lets a note be placed or held for a 1/256. This is the *snap* grid, which
  * is a separate question from the step sequencer's own 1/16 grid — that one is
  * fixed by `STEPS_PER_BEAT` and is not affected by this.
+ *
+ * Every entry is a halving of the one before it, which is what `drawnCells`
+ * relies on. The last two are finer than anything that can be played by hand;
+ * they are there so a note can be *placed* accurately — nudged to sit exactly
+ * where a recording or an import put it — rather than so it can be drawn at that
+ * size.
  */
-export const GRID_DIVISIONS = [1, 2, 4, 8, 16] as const
+export const GRID_DIVISIONS = [1, 2, 4, 8, 16, 32, 64] as const
 export type GridDivision = (typeof GRID_DIVISIONS)[number]
 export const DEFAULT_GRID_DIVISION: GridDivision = STEPS_PER_BEAT
 
@@ -74,6 +80,34 @@ export function gridLabel(division: number): string {
 /** One grid cell at a division, in seconds. */
 export function secondsPerGrid(bpm: number, division: number): number {
   return 60 / bpm / division
+}
+
+/**
+ * How close two grid lines may get before they stop being lines.
+ *
+ * A repeating gradient whose period is under a pixel does not draw a fine grid,
+ * it draws a wash of the line colour over the whole lane. Six is about where one
+ * pixel of line still reads as separate from the next one.
+ */
+export const MIN_GRID_LINE_PX = 6
+
+/**
+ * The finest of a set of divisions that can actually be drawn at a given width.
+ *
+ * `cellsPerBar` is how many cells the *snap* grid would put in a bar, and this
+ * walks back towards the bar until those cells have room — every division either
+ * grid offers is a halving of the one before it, so this is a halving and not a
+ * search.
+ *
+ * It answers what should be *drawn*, never what should be snapped to. The two
+ * are separate on purpose: zooming out takes lines away because there is no room
+ * for them, and if that also moved the grid a note or a clip lands on, the same
+ * drag at two zoom levels would produce two different edits.
+ */
+export function drawnCells(cellsPerBar: number, barWidthPx: number): number {
+  let cells = cellsPerBar
+  while (cells > 1 && barWidthPx / cells < MIN_GRID_LINE_PX) cells /= 2
+  return cells
 }
 
 /**
@@ -137,7 +171,7 @@ export const STEP_PX = 12
 
 // Zoom bounds, as the pixels one 1/16 step and one key take up. The floor is
 // where a step is still clickable and a key still readable; the ceiling is where
-// the finest grid the roll offers (a 1/64) is still a few pixels wide, so that a
+// the finest grid the roll offers (a 1/256) is still a few pixels wide, so that a
 // note can be both placed and grabbed at the resolution it was drawn at.
 export const MIN_STEP_PX = 3
 export const MAX_STEP_PX = 256

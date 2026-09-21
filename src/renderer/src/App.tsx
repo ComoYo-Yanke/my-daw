@@ -1,7 +1,8 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import BpmField from './components/BpmField'
 import ChannelRow from './components/ChannelRow'
 import DawWindow from './components/DawWindow'
+import ExportDialog from './components/ExportDialog'
 import FileMenu from './components/FileMenu'
 import PatternBar from './components/PatternBar'
 import PianoRoll from './components/PianoRoll'
@@ -32,6 +33,7 @@ function App(): React.JSX.Element {
   const undo = useDawStore((state) => state.undo)
   const openProject = useDawStore((state) => state.openProject)
   const saveProject = useDawStore((state) => state.saveProject)
+  const loadUserSamples = useDawStore((state) => state.loadUserSamples)
   /** How many notes the open roll has, which is what the ▶ button goes by too. */
   const pianoRollNoteCount = useDawStore((state) =>
     state.pianoRollChannelId === null ? 0 : selectNotes(state, state.pianoRollChannelId).length
@@ -48,6 +50,10 @@ function App(): React.JSX.Element {
   const pianoRollChannel = channels.find((channel) => channel.id === pianoRollChannelId)
 
   const stepsPlaying = playback?.mode === 'steps'
+
+  // Whether the export dialog is up. Local, because nothing outside it — not the
+  // store, not the windows — cares that a mix is being written.
+  const [exportOpen, setExportOpen] = useState(false)
 
   const workspaceRef = useRef<HTMLDivElement>(null)
 
@@ -78,6 +84,20 @@ function App(): React.JSX.Element {
     observer.observe(element)
     return () => observer.disconnect()
   }, [setWorkArea])
+
+  /**
+   * Read the sample folder the app was last pointed at.
+   *
+   * Once, on startup, and only a directory listing: what comes back is a list of
+   * names. Nothing is decoded until one of them is clicked, so opening the app
+   * costs one readdir however large the folder is.
+   *
+   * A no-op the first time the app is ever run, when there is no folder to
+   * remember — the store reports that as an empty sidebar rather than an error.
+   */
+  useEffect(() => {
+    void loadUserSamples()
+  }, [loadUserSamples])
 
   /**
    * The project's keyboard: the transport, undo, and the two file keys.
@@ -200,6 +220,14 @@ function App(): React.JSX.Element {
         >
           停止
         </button>
+        <button
+          type="button"
+          className="toolbar__button"
+          onClick={() => setExportOpen(true)}
+          title="把整首 Song 离线渲染成一个音频文件"
+        >
+          导出音频
+        </button>
         <span className="toolbar__count">{channels.length} 个通道</span>
       </header>
 
@@ -275,6 +303,8 @@ function App(): React.JSX.Element {
           )}
         </DawWindow>
       </div>
+
+      {exportOpen && <ExportDialog onClose={() => setExportOpen(false)} />}
 
       <Toast />
     </div>

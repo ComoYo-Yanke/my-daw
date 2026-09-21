@@ -17,6 +17,7 @@ import {
   triggerStrip
 } from '../audio/engine'
 import type { ScheduledChannel } from '../audio/engine'
+import type { ExportVoice } from '../audio/export'
 import { isLibraryPath, renderLibrarySample } from '../audio/library'
 import { computePeaks } from '../audio/peaks'
 import { parseProjectFile, serializeProject, type ProjectFile } from '../types/project'
@@ -67,6 +68,23 @@ export type Sample = {
   buffer: AudioBuffer
   peaks: Float32Array
 }
+
+/**
+ * One audio file found in the user's own sample folder.
+ *
+ * Only a description — nothing is read or decoded until it is clicked. A folder
+ * can hold hundreds of files and the sidebar has to open instantly.
+ */
+export type UserSample = {
+  /** Absolute path on disk. Also what the project stores, so it reopens. */
+  path: string
+  name: string
+  /** The subfolder it came from, or '' for one sitting at the top level. */
+  category: string
+}
+
+/** Where the chosen folder lives in the app's settings file. */
+const USER_SAMPLE_FOLDER_KEY = 'userSampleFolder'
 
 /**
  * A rack channel: one mixer strip that plays one sample.
@@ -165,6 +183,20 @@ export type PlaylistClip = {
   lengthBars: number
 }
 
+/**
+ * Where a clip was when a drag of it began.
+ *
+ * A drag says how far it has come, never where it is: the panel reports the
+ * distance from these and the store works out the rest, so a gesture that
+ * wanders and comes back lands exactly where it started rather than a few
+ * hundredths of a bar off after as many roundings.
+ */
+export type ClipOrigin = {
+  id: string
+  startBar: number
+  trackId: string
+}
+
 /** Which view the project is in, and which one the transport plays. */
 export type PlayMode = 'pattern' | 'song'
 
@@ -234,6 +266,28 @@ export const DEFAULT_TRACK_COUNT = 8
 export const TRACK_NAME_BASE = 'Track'
 
 /**
+ * The grids the timeline offers, in bars.
+ *
+ * Measured in bars rather than in divisions of a beat, because a bar is what the
+ * ruler and the lanes are drawn in. Every entry is a halving of the one before
+ * it, down to a 1/16 of a bar — a 1/16 note, which is as fine as a line the lane
+ * can actually draw (see `drawnCells`). Finer than that, turn snapping off; that
+ * switch is what it is for, and it costs nothing but precision of the hand.
+ */
+export const PLAYLIST_SNAP_OPTIONS = [1, 0.5, 0.25, 0.125, 0.0625] as const
+export type PlaylistSnapDivision = (typeof PLAYLIST_SNAP_OPTIONS)[number]
+export const DEFAULT_PLAYLIST_SNAP: PlaylistSnapDivision = 1
+
+/**
+ * Shortest a clip can be dragged down to, in bars.
+ *
+ * One beat, and unrelated to `MIN_LENGTH_BARS` — that one is how short a *pattern*
+ * may be, which is a different question. Only reachable with snapping off: at a
+ * bar or a beat the snap grid is already the floor.
+ */
+export const MIN_CLIP_LENGTH_BARS = 0.25
+
+/**
  * Shared empty sequence.
  *
  * Selectors must return the same array between renders for a channel that has no
@@ -270,6 +324,12 @@ export type DawState = {
   /** Channels with at least one voice sounding, for the row indicators. */
   playingChannelIds: string[]
   isImporting: boolean
+  /** The folder the user pointed the library at, or null if they never have. */
+  userSampleFolder: string | null
+  /** What the last scan of that folder found, in the order it will be drawn. */
+  userSamples: UserSample[]
+  /** True while the folder is being read, for the browser's own spinner state. */
+  isScanningSamples: boolean
   /** Last user-facing failure, cleared by `clearError`. */
   error: string | null
   /** A one-off acknowledgement — "已保存" — cleared by `clearToast`. */
@@ -291,10 +351,28 @@ export type DawState = {
    * — see `selectPlaylistBars`.
    */
   playlistBars: number
+  /**
+   * Where the song transport starts from, in bars.
+   *
+   * Bars rather than seconds, unlike the piano roll's cursor: a bar is what the
+   * timeline is measured and drawn in, so moving the tempo has to take the
+   * playhead with the music instead of leaving it a fraction of a bar away from
+   * where it was aimed. It reaches the audio clock through the same
+   * `secondsPerBar` bridge every clip does.
+   *
+   * A property of the transport rather than of the arrangement: it says where to
+   * play from, not what to play. It is saved with the project — a song that always
+   * starts from the top is a song you have to aim again on every open — but it is
+   * deliberately not in the undo snapshot, the same way `pianoRollStartSec` is
+   * not: Ctrl+Z takes back what was done, not where you were looking.
+   */
+  songStartBar: number
+  /** Whether dragging a clip's edge lands on the timeline's grid at all. */
+  playlistSnapEnabled: boolean
+  /** The grid a dragged clip lands on, in bars. */
+  playlistSnapDivision: PlaylistSnapDivision
   /** Which view is showing, and what the transport plays. */
   playMode: PlayMode
-  /** Highlighted clip, or null. */
-  selectedClipId: string | null
 
   /** Channel whose Piano Roll panel is open, or null when the panel is closed. */
   pianoRollChannelId: string | null
@@ -343,6 +421,26 @@ export type DawState = {
    * library sample is not a file — it is synthesised on the spot from its path.
    */
   addLibrarySample: (path: string) => Promise<void>
+  /**
+   * Read the remembered sample folder and list what is in it.
+   *
+   * Meant to be called once, on startup. Nothing happens when no folder has ever
+   * been chosen, which is the state the app ships in.
+   */
+  loadUserSamples: () => Promise<void>
+  /** Ask for a sample folder, remember it, and rescan. */
+  pickUserSampleFolder: () => Promise<void>
+  /** Rescan the folder already chosen, for files added since. */
+  refreshUserSamples: () => Promise<void>
+  /**
+   * Put one of the user's own samples in the rack as a new channel.
+   *
+   * The folder's version of `addLibrarySample`, and the file's version of it:
+   * the bytes are read from disk and decoded, and the channel keeps the real
+   * path — which is what makes a project that uses it reopen correctly, the same
+   * way an imported sample does.
+   */
+  addUserSample: (path: string) => Promise<void>
   triggerChannel: (channelId: string) => Promise<void>
   stopAll: () => void
   renameChannel: (channelId: string, name: string) => void
@@ -456,18 +554,67 @@ export type DawState = {
   stopSequence: () => void
 
   setPlayMode: (mode: PlayMode) => void
-  addClip: (trackId: string, startBar: number) => void
-  /** Move a clip, optionally onto another track. Free placement: clips may overlap. */
-  moveClip: (clipId: string, startBar: number, trackId?: string) => void
+  /**
+   * Move where the song transport starts.
+   *
+   * Snapped like every other drag on the timeline, and for the same reason: the
+   * playhead is a position on the same grid the clips sit on. `snap` is off when
+   * the caller means it — Alt held, or the switch itself off.
+   *
+   * Clamped here as well as when read, so dragging the playhead past the end
+   * parks it at the end rather than storing a position the next tempo change
+   * would have to be reasoned about from.
+   */
+  setSongStart: (bar: number, snap?: boolean) => void
+  togglePlaylistSnap: () => void
+  /** Change the grid dragged clips land on. Nothing already placed moves. */
+  setPlaylistSnapDivision: (division: PlaylistSnapDivision) => void
+
+  /**
+   * Drop a clip of the current pattern onto a lane.
+   *
+   * Returns the clip it made, or null when there was nothing to place — the lane
+   * may have been deleted between the click and now, and the panel that asked for
+   * it needs the id to select it.
+   *
+   * `snap` is whether the drop lands on the grid. Off, the clip sits exactly
+   * where the pointer was; the floor of zero still applies, because there is no
+   * song before the first bar.
+   */
+  addClip: (trackId: string, startBar: number, snap?: boolean) => PlaylistClip | null
+  /**
+   * Move clips as one group, by a distance measured from where they were.
+   *
+   * `origins` is where each clip was when the gesture started, and `origins[0]`
+   * is the one under the pointer: the group is positioned by that anchor, so the
+   * spacing inside it survives the drag exactly as it was. Passing origins
+   * rather than a running delta is what makes a drag that wanders and comes back
+   * land where it began.
+   *
+   * Free placement otherwise: clips may overlap, and lanes have no limit.
+   */
+  moveClips: (origins: ClipOrigin[], deltaBars: number, deltaTracks: number, snap?: boolean) => void
   /**
    * Drag a clip's right edge. The clip's own length, not a count of plays:
    * shorter than the pattern cuts it off, longer loops it.
    */
-  resizeClip: (clipId: string, lengthBars: number) => void
+  resizeClip: (clipId: string, lengthBars: number, snap?: boolean) => void
   /** Drag a clip's left edge, holding its right end where it is. */
-  trimClipStart: (clipId: string, startBar: number) => void
-  removeClip: (clipId: string) => void
-  selectClip: (clipId: string | null) => void
+  trimClipStart: (clipId: string, startBar: number, snap?: boolean) => void
+  /** Take clips away. One undo step for the lot, however many there are. */
+  removeClips: (ids: string[]) => void
+  /**
+   * Copy clips where they are, and hand back the copies' ids in the order asked.
+   *
+   * In place, because what this is for is Ctrl+dragging a selection: the copies
+   * appear under the pointer and are then dragged where they were going, so a
+   * copy made anywhere else would jump. The originals do not move.
+   *
+   * The undo step is taken here, before the copies exist, and the drag that
+   * follows takes one of its own: Ctrl+Z once puts the copies back where they
+   * were made, a second time takes them away. That is the order it happened in.
+   */
+  duplicateClips: (ids: string[]) => string[]
 
   /** Add an empty lane at the bottom of the timeline. */
   addTrack: () => void
@@ -479,6 +626,15 @@ export type DawState = {
    * It is one undo step, which is what makes it safe to do without a prompt.
    */
   removeTrack: (trackId: string) => void
+  /**
+   * Take away every lane with no clips on it, in one step.
+   *
+   * At least one lane is left, empty or not: nothing can be placed on a timeline
+   * that has no lanes, and keeping one costs nothing. Lanes that have clips are
+   * not touched — this is the tidy-up after moving things about, not a way to
+   * lose work.
+   */
+  removeEmptyTracks: () => void
   toggleTrackMute: (trackId: string) => void
   toggleTrackSolo: (trackId: string) => void
   /** Make the timeline longer. It never shortens itself to fit the clips. */
@@ -581,6 +737,11 @@ export function selectLengthBars(state: DawState): number {
  * way rather than kept in range on every edit so that a project whose clips run
  * past its recorded length — an older file, or one whose patterns have grown
  * since — opens with those clips still reachable rather than hanging off the end.
+ *
+ * Rounded up to a whole bar, because a clip may now sit at a fraction of one:
+ * a timeline 40.5 bars long would leave the ruler stopping half a bar short of
+ * the lanes under it, and `growPlaylist` would write that fraction back into the
+ * stored length, where it would stay. The timeline is measured in whole bars.
  */
 export function selectPlaylistBars(state: DawState): number {
   const longestPattern = state.patterns.reduce(
@@ -591,7 +752,19 @@ export function selectPlaylistBars(state: DawState): number {
     (bars, clip) => Math.max(bars, clip.startBar + clip.lengthBars),
     0
   )
-  return Math.max(state.playlistBars, longestPattern, furthestClip)
+  return Math.ceil(Math.max(state.playlistBars, longestPattern, furthestClip))
+}
+
+/**
+ * Where the song transport starts, held inside the timeline.
+ *
+ * Clamped on the way out rather than kept in range, because what it has to fit
+ * inside — the length of the song — can change without the playhead being
+ * touched: delete the last clip and the place you had aimed at is off the end.
+ * The same shape as `selectPianoRollStartSec`, for the same reason.
+ */
+export function selectSongStartBar(state: DawState): number {
+  return clamp(state.songStartBar, 0, selectPlaylistBars(state))
 }
 
 /**
@@ -638,9 +811,42 @@ export function selectChannelPlayback(state: DawState, channelId: string): Playb
   return state.playback?.channelId === channelId ? state.playback : null
 }
 
-/** Whole bars, never negative. Where a dragged clip is allowed to land. */
-function clampBar(bar: number): number {
-  return Math.max(0, Math.round(bar))
+/**
+ * A dragged position, put on the timeline's grid.
+ *
+ * The grid is the whole of the difference: on, the value lands on the nearest
+ * multiple of the division; off, it is exactly what was asked for.
+ *
+ * The *value* is snapped rather than the distance travelled, which is a
+ * deliberate departure from the piano roll — see `moveClips`.
+ *
+ * No floor at zero here. A group of clips is clamped as a group, which is a
+ * question about how far the group may travel rather than where one clip may
+ * sit; `snapClipBar` is this plus the floor, for the callers that want it.
+ */
+function snapBar(bar: number, division: number, snap: boolean): number {
+  return snap ? Math.round(bar / division) * division : bar
+}
+
+/**
+ * Where a dragged clip's edge is allowed to land.
+ *
+ * On the timeline's grid, and never negative either way: there is no song before
+ * the first bar.
+ */
+function snapClipBar(bar: number, division: number, snap: boolean): number {
+  return Math.max(0, snapBar(bar, division, snap))
+}
+
+/**
+ * A clip's length after a drag of its right edge.
+ *
+ * Snapped like a position, and floored at a beat. The floor is what stops a clip
+ * disappearing into nothing: a zero-length clip could never be grabbed again.
+ */
+function snapClipLength(lengthBars: number, division: number, snap: boolean): number {
+  const snapped = snap ? Math.round(lengthBars / division) * division : lengthBars
+  return Math.max(MIN_CLIP_LENGTH_BARS, snapped)
 }
 
 /**
@@ -802,10 +1008,134 @@ function nextStepColor(taken: number): string {
  * Mute wins over solo. While anything is soloed, everything else is silenced —
  * which is why solo has to be resolved across the whole rack, not per channel.
  */
-function audibleGain(channel: Channel, anySoloed: boolean): number {
+export function audibleGain(channel: Channel, anySoloed: boolean): number {
   if (channel.muted) return 0
   if (anySoloed && !channel.soloed) return 0
   return channel.volume
+}
+
+/** A song flattened onto one timeline: what sounds, and how far it runs. */
+export type SongTimeline = {
+  /** One entry per channel that has something to play, keyed by channel id. */
+  notesByChannel: Map<string, Note[]>
+  /** Where the song ends: the furthest edge of any clip that can be heard. */
+  bars: number
+}
+
+/**
+ * Lay the arrangement out as one timeline of notes.
+ *
+ * Clips are read in bar positions and their patterns unrolled to fill them —
+ * played once for a clip no longer than its pattern, repeated for a longer one,
+ * with the last repetition cut off at the clip's edge. Two clips of one pattern
+ * stacked on a channel arrive as two sets of the same notes, and sound as one
+ * part played twice; nothing here tries to keep them apart.
+ *
+ * Both the transport and the exporter go through this, which is the point: an
+ * export that flattened the song its own way would be a second answer to "what
+ * does the song sound like", and the two would drift.
+ *
+ * `bpm` is the tempo to lay it out at, which is the project's unless a caller
+ * asks for another one. Everything measured in bars — where a clip starts, how
+ * long it is — follows that tempo directly. Note positions inside a pattern do
+ * not: they are stored in seconds and so are pinned to the tempo they were
+ * written at, and are scaled by the same ratio instead. Render at twice the
+ * tempo and every second value halves, which is what keeps the notes where they
+ * were drawn rather than sliding towards the front of the clip.
+ */
+export function selectSongTimeline(state: DawState, bpm: number = state.bpm): SongTimeline {
+  const { playlistClips, playlistTracks, patterns } = state
+
+  const barSec = secondsPerBar(bpm)
+  const noteSecScale = state.bpm / bpm
+  const patternBarSec = secondsPerBar(state.bpm)
+
+  const anySoloed = playlistTracks.some((track) => track.soloed)
+  const audibleTracks = new Set(
+    playlistTracks
+      .filter((track) => !track.muted && (!anySoloed || track.soloed))
+      .map((track) => track.id)
+  )
+
+  const notesByChannel = new Map<string, Note[]>()
+  let bars = 0
+
+  for (const clip of playlistClips) {
+    // A clip on a lane that has been deleted, or on a silenced one, is not part
+    // of what is heard — and so does not extend the song either.
+    if (!audibleTracks.has(clip.trackId)) continue
+    const pattern = patterns.find((item) => item.id === clip.patternId)
+    if (!pattern) continue
+
+    bars = Math.max(bars, clip.startBar + clip.lengthBars)
+    const clipEndBar = clip.startBar + clip.lengthBars
+
+    const plays = Math.ceil(clip.lengthBars / pattern.lengthBars)
+    for (let play = 0; play < plays; play += 1) {
+      const playStartBar = clip.startBar + play * pattern.lengthBars
+      if (playStartBar >= clipEndBar) break
+
+      // In the pattern's own seconds, which is the unit the notes are in.
+      const playSec = Math.min(pattern.lengthBars, clipEndBar - playStartBar) * patternBarSec
+      const offsetSec = playStartBar * barSec
+
+      for (const [channelId, notes] of Object.entries(pattern.notesByChannel)) {
+        const timeline = notesByChannel.get(channelId) ?? []
+        for (const note of notes) {
+          // Starts past the clip's end, so it was cut away entirely.
+          if (note.startSec >= playSec) continue
+          timeline.push({
+            ...note,
+            startSec: note.startSec * noteSecScale + offsetSec,
+            lengthSec: Math.min(note.lengthSec, playSec - note.startSec) * noteSecScale
+          })
+        }
+        notesByChannel.set(channelId, timeline)
+      }
+    }
+  }
+
+  return { notesByChannel, bars }
+}
+
+/** What one render needs: the channels that sound, and how long it runs. */
+export type ExportPlan = {
+  voices: ExportVoice[]
+  /** End to end, tail included. */
+  durationSec: number
+}
+
+/**
+ * Flatten the song into what the offline render needs.
+ *
+ * Channel gain is resolved here rather than left to a strip, because the offline
+ * graph has no strips to hold it: mute and solo are questions about the whole
+ * rack, answered the same way `applyMix` answers them live.
+ *
+ * A channel with nothing to play is dropped rather than shipped as a silent
+ * strip. A channel with no sample, or one whose file went missing, is dropped
+ * too — the same reason the transport drops it, which is that there is nothing
+ * to sound.
+ */
+export function selectExportPlan(state: DawState, bpm: number, tailSec: number): ExportPlan {
+  const { notesByChannel, bars } = selectSongTimeline(state, bpm)
+  const anySoloed = state.channels.some((channel) => channel.soloed)
+
+  const voices: ExportVoice[] = []
+  for (const [channelId, notes] of notesByChannel) {
+    if (notes.length === 0) continue
+    const channel = state.channels.find((item) => item.id === channelId)
+    const sample = channel && state.samples.find((item) => item.id === channel.sampleId)
+    if (!channel || !sample) continue
+    voices.push({
+      buffer: sample.buffer,
+      gain: audibleGain(channel, anySoloed),
+      pan: channel.pan,
+      notes: [...notes].sort((a, b) => a.startSec - b.startSec)
+    })
+  }
+
+  return { voices, durationSec: bars * secondsPerBar(bpm) + Math.max(0, tailSec) }
 }
 
 export const useDawStore = create<DawState>((set, get) => {
@@ -1378,6 +1708,34 @@ export const useDawStore = create<DawState>((set, get) => {
     }
   }
 
+  /**
+   * List a folder into the sidebar, or clear the sidebar when there is none.
+   *
+   * Reading the folder is all this does — nothing is decoded here. A sample
+   * becomes audio when it is clicked, so pointing the library at a folder of a
+   * few hundred files costs one directory listing rather than a few hundred
+   * decodes.
+   */
+  const applyScan = async (folder: string | null): Promise<void> => {
+    if (folder === null) {
+      set({ userSampleFolder: null, userSamples: [], isScanningSamples: false })
+      return
+    }
+
+    set({ isScanningSamples: true })
+    try {
+      const found = await window.api.scanSampleFolder(folder)
+      set({
+        userSampleFolder: folder,
+        userSamples: found,
+        isScanningSamples: false,
+        error: null
+      })
+    } catch (cause) {
+      set({ isScanningSamples: false, error: `扫描采样目录失败：${errorMessage(cause)}` })
+    }
+  }
+
   // A project always has a pattern to edit and lanes to arrange them on.
   const firstPattern = makePattern(FIRST_PATTERN_NAME)
   const firstTracks = makeDefaultTracks()
@@ -1390,6 +1748,9 @@ export const useDawStore = create<DawState>((set, get) => {
     currentPatternId: firstPattern.id,
     playingChannelIds: [],
     isImporting: false,
+    userSampleFolder: null,
+    userSamples: [],
+    isScanningSamples: false,
     error: null,
     toast: null,
     projectPath: null,
@@ -1397,8 +1758,13 @@ export const useDawStore = create<DawState>((set, get) => {
     playlistClips: [],
     playlistTracks: firstTracks,
     playlistBars: MIN_PLAYLIST_BARS,
+    songStartBar: 0,
+    // The timeline's own grid settings, separate from the piano roll's: a
+    // pattern is written at a 1/16 and an arrangement is laid out in bars, so
+    // one switch could not serve both.
+    playlistSnapEnabled: true,
+    playlistSnapDivision: DEFAULT_PLAYLIST_SNAP,
     playMode: 'pattern',
-    selectedClipId: null,
     pianoRollChannelId: null,
     loopEnabled: false,
     pianoRollStartSec: 0,
@@ -1556,6 +1922,82 @@ export const useDawStore = create<DawState>((set, get) => {
       const strip = getStrip(channel.id)
       if (strip) triggerStrip(strip, sample.buffer)
       showToast(`已添加 ${built.sample.name}`)
+    },
+
+    loadUserSamples: async () => {
+      try {
+        const settings = await window.api.readSettings()
+        const folder = settings[USER_SAMPLE_FOLDER_KEY]
+        // A folder someone has since deleted reads the same as never having
+        // chosen one: an empty sidebar rather than a complaint on every startup.
+        if (typeof folder !== 'string' || folder === '') {
+          await applyScan(null)
+          return
+        }
+        await applyScan(folder)
+      } catch (cause) {
+        set({ error: `读取设置失败：${errorMessage(cause)}` })
+      }
+    },
+
+    pickUserSampleFolder: async () => {
+      try {
+        const folder = await window.api.chooseSampleFolder()
+        if (folder === null) return
+
+        // Read first and spread, so this does not become the only setting there
+        // is to have. Nothing else is stored yet, and this is what keeps that
+        // from being a rule.
+        const settings = await window.api.readSettings()
+        await window.api.writeSettings({ ...settings, [USER_SAMPLE_FOLDER_KEY]: folder })
+        await applyScan(folder)
+      } catch (cause) {
+        set({ error: `选择采样目录失败：${errorMessage(cause)}` })
+      }
+    },
+
+    refreshUserSamples: async () => {
+      const folder = get().userSampleFolder
+      if (folder === null) {
+        set({ error: '还没有选择采样目录' })
+        return
+      }
+      await applyScan(folder)
+    },
+
+    addUserSample: async (path) => {
+      try {
+        const files = await window.api.readSampleFiles([path])
+        const file = files[0]
+        if (file === undefined) {
+          set({ error: `打不开 ${path}，文件可能已被移动或删除` })
+          return
+        }
+
+        const buffer = await decodeAudioData(toArrayBuffer(file.data))
+        const name = file.name.replace(/\.[^.]+$/, '')
+        const sample = makeSample(file.name, file.path, buffer)
+        const taken = get().channels.length
+
+        // The path goes into the project as it is, exactly as an imported
+        // sample's does — which is what makes reopening work without anything
+        // else knowing where the file came from.
+        pushUndo(`user-sample:${path}`)
+        const channel = makeChannel(sample.id, name, taken)
+        set((state) => ({
+          samples: [...state.samples, sample],
+          channels: [...state.channels, channel],
+          error: null
+        }))
+        applyMix(get().channels)
+
+        await resumeAudioContext()
+        const strip = getStrip(channel.id)
+        if (strip) triggerStrip(strip, sample.buffer)
+        showToast(`已添加 ${name}`)
+      } catch (cause) {
+        set({ error: `无法解码 ${path}：${errorMessage(cause)}` })
+      }
     },
 
     triggerChannel: async (channelId) => {
@@ -1740,8 +2182,8 @@ export const useDawStore = create<DawState>((set, get) => {
         playlistClips: [],
         playlistTracks: makeDefaultTracks(),
         playlistBars: MIN_PLAYLIST_BARS,
+        songStartBar: 0,
         playMode: 'pattern',
-        selectedClipId: null,
         pianoRollChannelId: null,
         playback: null,
         bpm: DEFAULT_BPM,
@@ -1806,9 +2248,9 @@ export const useDawStore = create<DawState>((set, get) => {
         playlistClips: parsed.project.playlistClips,
         playlistTracks: parsed.project.playlistTracks,
         playlistBars: parsed.project.playlistBars,
+        songStartBar: parsed.project.songStartBar,
         playMode: parsed.project.playMode,
         playingChannelIds: [],
-        selectedClipId: null,
         pianoRollChannelId: null,
         playback: null,
         bpm: parsed.project.bpm,
@@ -1934,10 +2376,6 @@ export const useDawStore = create<DawState>((set, get) => {
               ? patterns[Math.min(Math.max(0, at - 1), patterns.length - 1)].id
               : current.currentPatternId,
           playlistClips: current.playlistClips.filter((clip) => !doomed.has(clip.id)),
-          selectedClipId:
-            current.selectedClipId !== null && doomed.has(current.selectedClipId)
-              ? null
-              : current.selectedClipId,
           error: null
         }
       })
@@ -2441,64 +2879,52 @@ export const useDawStore = create<DawState>((set, get) => {
      * Clips may overlap, and do: two clips of one pattern stacked on the same
      * channel arrive as two sets of the same notes, which sound as one part
      * played twice. Nothing here tries to keep them apart.
+     *
+     * The song starts from the playhead rather than from the top. Anything that
+     * began before it is dropped rather than picked up mid-note: a sample already
+     * under way has nothing to resume from, so a note straddling the start is
+     * silent until it would have ended. (The engine can be taught to start a
+     * buffer at an offset — `source.start(when, offset)` — and this is where that
+     * would go; it is a choice, not a limit.)
      */
     playSong: async () => {
-      const { playlistClips, playlistTracks, patterns, channels, samples, bpm } = get()
+      const state = get()
+      const { playlistClips, channels, samples, bpm } = state
       if (playlistClips.length === 0) return
 
-      const anySoloed = playlistTracks.some((track) => track.soloed)
-      const audibleTracks = new Set(
-        playlistTracks
-          .filter((track) => !track.muted && (!anySoloed || track.soloed))
-          .map((track) => track.id)
-      )
-
+      // Read before the transport is torn down rather than after
+      // `resumeAudioContext`, unlike `playPianoRoll`: the notes have to be
+      // trimmed before we can tell whether anything is left to play, and that
+      // answer decides whether the running transport is disturbed at all — a song
+      // that is silent from the playhead must not stop the step loop under it.
+      //
+      // So this one reading is the whole of where the song starts, and it is the
+      // one the trimming is done against. Moving the playhead during the resume
+      // below would move the cursor on screen without moving the audio, which is
+      // a window of a few milliseconds and is not worth a second trim to close.
+      const fromBar = selectSongStartBar(state)
       const barSec = secondsPerBar(bpm)
-      const merged = new Map<string, Note[]>()
-      let songBars = 0
+      const fromSec = fromBar * barSec
 
-      for (const clip of playlistClips) {
-        // A clip on a lane that has been deleted, or on a silenced one, is not
-        // part of what is heard.
-        if (!audibleTracks.has(clip.trackId)) continue
-        const pattern = patterns.find((item) => item.id === clip.patternId)
-        if (!pattern) continue
+      // The same flattening the exporter uses, so what is heard and what is
+      // written out cannot come apart.
+      const { notesByChannel: merged, bars: songBars } = selectSongTimeline(state)
 
-        songBars = Math.max(songBars, clip.startBar + clip.lengthBars)
-        const clipEndBar = clip.startBar + clip.lengthBars
-
-        // How many times the pattern has to be laid down to fill the clip: once
-        // for a clip no longer than its pattern, more for one that loops it.
-        const plays = Math.ceil(clip.lengthBars / pattern.lengthBars)
-        for (let play = 0; play < plays; play += 1) {
-          const playStartBar = clip.startBar + play * pattern.lengthBars
-          if (playStartBar >= clipEndBar) break
-
-          // The last play of a looping clip is usually a part of the pattern,
-          // which is what cuts it off.
-          const playBars = Math.min(pattern.lengthBars, clipEndBar - playStartBar)
-          const playSec = playBars * barSec
-          const offsetSec = playStartBar * barSec
-
-          for (const [channelId, notes] of Object.entries(pattern.notesByChannel)) {
-            const timeline = merged.get(channelId) ?? []
-            for (const note of notes) {
-              // Starts past the clip's end, so it was cut away entirely.
-              if (note.startSec >= playSec) continue
-              timeline.push({
-                ...note,
-                startSec: note.startSec + offsetSec,
-                lengthSec: Math.min(note.lengthSec, playSec - note.startSec)
-              })
-            }
-            merged.set(channelId, timeline)
-          }
-        }
+      // The playhead: everything before it is behind us, and what is left is
+      // rebased so that zero is where the transport starts.
+      const ahead = new Map<string, Note[]>()
+      for (const [channelId, notes] of merged) {
+        ahead.set(
+          channelId,
+          notes
+            .filter((note) => note.startSec >= fromSec)
+            .map((note) => ({ ...note, startSec: note.startSec - fromSec }))
+        )
       }
 
       const scheduled: ScheduledChannel[] = []
       const channelIds: string[] = []
-      for (const [channelId, notes] of merged) {
+      for (const [channelId, notes] of ahead) {
         if (notes.length === 0) continue
         const channel = channels.find((item) => item.id === channelId)
         const sample = channel && samples.find((item) => item.id === channel.sampleId)
@@ -2513,8 +2939,10 @@ export const useDawStore = create<DawState>((set, get) => {
       }
       if (scheduled.length === 0) {
         // Clips exist but none of them carry a note, so there is no transport to
-        // start. Say so rather than leaving the button looking broken.
-        set({ error: '时间线上的 Pattern 还没有音符' })
+        // start. Say so rather than leaving the button looking broken — and say
+        // which of the two reasons it was, because the fix is different.
+        const empty = [...merged.values()].every((notes) => notes.length === 0)
+        set({ error: empty ? '时间线上的 Pattern 还没有音符' : '播放起点之后没有音符' })
         return
       }
 
@@ -2528,7 +2956,9 @@ export const useDawStore = create<DawState>((set, get) => {
           channelId: null,
           channelIds,
           startedAtSec: startAtSec,
-          endsAtSec: startAtSec + songBars * barSec
+          // What is left of the song after the playhead, which is what the
+          // progress readout counts up to.
+          endsAtSec: startAtSec + Math.max(0, songBars - fromBar) * barSec
         }
       })
 
@@ -2574,20 +3004,44 @@ export const useDawStore = create<DawState>((set, get) => {
     },
 
     /**
+     * Move where the song transport starts.
+     *
+     * Not an undo step: the playhead is where you are looking, not something you
+     * did to the project, and a snapshot of it would make Ctrl+Z after a nudge
+     * take back the edit before the nudge instead. It does not mark the project
+     * dirty either, for the same reason — a moved playhead is saved when the next
+     * real edit is, and a session that only ever moved the playhead has nothing
+     * worth prompting about.
+     */
+    setSongStart: (bar, snap = true) =>
+      set((state) => ({ songStartBar: snapClipBar(bar, state.playlistSnapDivision, snap) })),
+
+    togglePlaylistSnap: () => set((state) => ({ playlistSnapEnabled: !state.playlistSnapEnabled })),
+
+    /**
+     * Change the grid dragged clips land on.
+     *
+     * Nothing already placed moves: the grid says where the next drag lands, and
+     * re-gridding a bar that was placed at a finer one would be a different edit
+     * from the one that was asked for. Same rule as the piano roll's.
+     */
+    setPlaylistSnapDivision: (division) => set({ playlistSnapDivision: division }),
+
+    /**
      * Drop a clip of the current pattern onto a lane.
      *
      * Free placement: what is already on those bars is not consulted, and two
-     * clips on the same bars are simply two clips. Snapped to whole bars, since
-     * a bar is the unit the ruler is drawn in and a clip half a bar along would
-     * never line up with the grid under it.
+     * clips on the same bars are simply two clips. Snapped to the timeline's grid
+     * unless the caller says otherwise, because a clip landing between two lines
+     * the ruler draws is a clip nothing lines up with.
      */
-    addClip: (trackId, startBar) => {
+    addClip: (trackId, startBar, snap = true) => {
       const state = get()
       const pattern = selectCurrentPattern(state)
       // The lane may have been deleted between the click and now.
-      if (!pattern || !state.playlistTracks.some((track) => track.id === trackId)) return
+      if (!pattern || !state.playlistTracks.some((track) => track.id === trackId)) return null
 
-      const bar = clampBar(startBar)
+      const bar = snapClipBar(startBar, state.playlistSnapDivision, snap)
       const clip: PlaylistClip = {
         id: crypto.randomUUID(),
         patternId: state.currentPatternId,
@@ -2600,37 +3054,68 @@ export const useDawStore = create<DawState>((set, get) => {
       set((current) => ({
         playlistClips: [...current.playlistClips, clip],
         playlistBars: barsToHold(bar + clip.lengthBars, current.playlistBars),
-        selectedClipId: clip.id,
         error: null
       }))
+      return clip
     },
 
     /**
-     * Move a clip along its lane, or onto another one.
+     * Move clips along the timeline, or onto other lanes.
      *
-     * Nothing is clamped except the left edge of the song: a clip is free to sit
-     * on top of another, and dragging one past the end of the timeline is how the
-     * timeline is asked to grow.
+     * The anchor's new *position* is snapped rather than the distance travelled,
+     * which is the opposite of what `moveNotes` does. Snapping the distance keeps
+     * a group rigid but leaves a clip that was placed with snapping off off-grid
+     * for good, so no drag could ever put it back; snapping the position means
+     * every drag lands on the grid, whichever way the clip got where it was.
+     * Measuring the anchor's position from the anchor's own origin is what turns
+     * that back into a distance for the rest of the group to share.
+     *
+     * The two clamps are on the group and not on the clips: the leftmost clip is
+     * what stops at bar 0, and the outermost lanes are what stop at the two ends
+     * of the rack. Clamping each clip on its own would squash the group against
+     * the edge instead, which loses the spacing the drag was preserving.
      */
-    moveClip: (clipId, startBar, trackId) => {
-      pushUndo(`move-clip:${clipId}`)
+    moveClips: (origins, deltaBars, deltaTracks, snap = true) => {
+      if (origins.length === 0) return
+      const ids = origins.map((origin) => origin.id)
+      pushUndo(`move-clips:${ids.join(',')}`)
       set((state) => {
-        // A lane that is not there — a stale drag — leaves the clip where it is
-        // rather than putting it on a track nothing draws.
-        const target =
-          trackId !== undefined && state.playlistTracks.some((track) => track.id === trackId)
-            ? trackId
-            : null
+        const byId = new Map(origins.map((origin) => [origin.id, origin]))
+        const tracks = state.playlistTracks
+        const laneOf = (origin: ClipOrigin): number =>
+          tracks.findIndex((track) => track.id === origin.trackId)
+
+        const lanes = origins.map(laneOf)
+        // A lane that is not there — a stale drag — is answered by leaving the
+        // whole gesture alone rather than by putting clips on a lane nothing
+        // draws. Half a move would be worse than none of one.
+        if (lanes.some((lane) => lane < 0)) return state
+
+        const anchor = origins[0]
+        // How far the group travels: snapped where the anchor lands, then held
+        // back so the leftmost clip of the group stops at bar 0 rather than
+        // every clip stopping at bar 0 and the group folding up against it.
+        const bars = Math.max(
+          snapBar(anchor.startBar + deltaBars, state.playlistSnapDivision, snap) - anchor.startBar,
+          -Math.min(...origins.map((origin) => origin.startBar))
+        )
+        // The same rule down the rack, in whole lanes.
+        const step = clamp(
+          clamp(lanes[0] + deltaTracks, 0, tracks.length - 1) - lanes[0],
+          -Math.min(...lanes),
+          tracks.length - 1 - Math.max(...lanes)
+        )
 
         let furthest = 0
         const playlistClips = state.playlistClips.map((clip) => {
-          if (clip.id !== clipId) return clip
+          const origin = byId.get(clip.id)
+          if (origin === undefined) return clip
           const moved: PlaylistClip = {
             ...clip,
-            startBar: clampBar(startBar),
-            trackId: target ?? clip.trackId
+            startBar: origin.startBar + bars,
+            trackId: tracks[laneOf(origin) + step]?.id ?? clip.trackId
           }
-          furthest = moved.startBar + moved.lengthBars
+          furthest = Math.max(furthest, moved.startBar + moved.lengthBars)
           return moved
         })
 
@@ -2643,16 +3128,18 @@ export const useDawStore = create<DawState>((set, get) => {
      *
      * The number is the clip's own length in bars, not a count of plays of its
      * pattern: shorter than the pattern cuts the pattern off, longer loops it.
-     * Whole bars, and never less than one — a bar is what the ruler is drawn in,
-     * and one bar is the shortest thing worth placing.
+     * At least a beat, however the drag went.
      */
-    resizeClip: (clipId, lengthBars) => {
+    resizeClip: (clipId, lengthBars, snap = true) => {
       pushUndo(`resize-clip:${clipId}`)
       set((state) => {
         let furthest = 0
         const playlistClips = state.playlistClips.map((clip) => {
           if (clip.id !== clipId) return clip
-          const resized: PlaylistClip = { ...clip, lengthBars: Math.max(1, Math.round(lengthBars)) }
+          const resized: PlaylistClip = {
+            ...clip,
+            lengthBars: snapClipLength(lengthBars, state.playlistSnapDivision, snap)
+          }
           furthest = resized.startBar + resized.lengthBars
           return resized
         })
@@ -2670,28 +3157,48 @@ export const useDawStore = create<DawState>((set, get) => {
      * first bar, so this moves where the clip begins rather than which part of
      * the pattern it starts from.
      */
-    trimClipStart: (clipId, startBar) => {
+    trimClipStart: (clipId, startBar, snap = true) => {
       pushUndo(`trim-clip:${clipId}`)
       set((state) => ({
         playlistClips: state.playlistClips.map((clip) => {
           if (clip.id !== clipId) return clip
           const right = clip.startBar + clip.lengthBars
-          // At least one bar has to survive to the left of the right end.
-          const start = clamp(clampBar(startBar), 0, right - 1)
+          // A beat has to survive to the left of the right end, so there is
+          // always something left to grab hold of.
+          const start = clamp(
+            snapClipBar(startBar, state.playlistSnapDivision, snap),
+            0,
+            right - MIN_CLIP_LENGTH_BARS
+          )
           return { ...clip, startBar: start, lengthBars: right - start }
         })
       }))
     },
 
-    removeClip: (clipId) => {
-      pushUndo(`remove-clip:${clipId}`)
+    removeClips: (ids) => {
+      if (ids.length === 0) return
+      const doomed = new Set(ids)
+      pushUndo(`remove-clips:${ids.join(',')}`)
       set((state) => ({
-        playlistClips: state.playlistClips.filter((clip) => clip.id !== clipId),
-        selectedClipId: state.selectedClipId === clipId ? null : state.selectedClipId
+        playlistClips: state.playlistClips.filter((clip) => !doomed.has(clip.id))
       }))
     },
 
-    selectClip: (clipId) => set({ selectedClipId: clipId }),
+    duplicateClips: (ids) => {
+      const state = get()
+      const byId = new Map(state.playlistClips.map((clip) => [clip.id, clip]))
+      // Built in the order asked for, so the caller can line the copies up with
+      // what it passed in — which is how a drag knows where its copies came from.
+      const copies = ids
+        .map((id) => byId.get(id))
+        .filter((clip): clip is PlaylistClip => clip !== undefined)
+        .map((clip) => ({ ...clip, id: crypto.randomUUID() }))
+      if (copies.length === 0) return []
+
+      pushUndo(`duplicate-clips:${ids.join(',')}`)
+      set((current) => ({ playlistClips: [...current.playlistClips, ...copies], error: null }))
+      return copies.map((clip) => clip.id)
+    },
 
     /** Add an empty lane at the bottom of the timeline. */
     addTrack: () => {
@@ -2729,12 +3236,28 @@ export const useDawStore = create<DawState>((set, get) => {
       set((current) => ({
         playlistTracks: current.playlistTracks.filter((track) => track.id !== trackId),
         playlistClips: current.playlistClips.filter((clip) => !doomed.has(clip.id)),
-        selectedClipId:
-          current.selectedClipId !== null && doomed.has(current.selectedClipId)
-            ? null
-            : current.selectedClipId,
         error: null
       }))
+    },
+
+    /**
+     * Take away every lane with no clips on it.
+     *
+     * At least one lane survives, empty or not — a timeline with no lanes is a
+     * timeline nothing can be dropped on, and a lane of its own costs nothing.
+     * Which lane that is: the first one, so the one at the top of the rack is
+     * the one that stays and the answer does not depend on what was moved where.
+     */
+    removeEmptyTracks: () => {
+      const state = get()
+      const used = new Set(state.playlistClips.map((clip) => clip.trackId))
+      const kept = state.playlistTracks.filter((track) => used.has(track.id))
+      const next = kept.length === 0 ? [state.playlistTracks[0]] : kept
+      // Nothing to do is not an edit, and must not land on the undo stack.
+      if (next.length === state.playlistTracks.length) return
+
+      pushUndo('remove-empty-tracks')
+      set({ playlistTracks: next, error: null })
     },
 
     toggleTrackMute: (trackId) => {

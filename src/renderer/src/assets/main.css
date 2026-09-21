@@ -606,11 +606,74 @@ body {
   background: var(--daw-panel);
 }
 
+/* The user's own folder: the two controls that point the panel at it, and the
+   path they are pointed at. */
+.library__folder {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+  padding: 8px 10px 0;
+}
+
+.library__folder-button {
+  flex: 1;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid var(--daw-border);
+  border-radius: 5px;
+  background: var(--ev-c-gray-3);
+  color: var(--ev-c-text-1);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 24px;
+  cursor: pointer;
+}
+
+.library__folder-button:hover:not(:disabled) {
+  border-color: var(--daw-accent);
+  color: var(--daw-accent);
+}
+
+.library__folder-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.library__folder-button--slim {
+  flex: 0 0 auto;
+}
+
+.library__folder-path {
+  flex-shrink: 0;
+  margin: 0;
+  padding: 6px 10px 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ev-c-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library__empty {
+  margin: 0;
+  padding: 4px 12px 8px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ev-c-text-3);
+}
+
 .library__tree {
   flex: 1;
   min-height: 0;
   overflow: auto;
   padding: 8px 0;
+}
+
+/* The user's categories, marked apart from the built-in ones so it is clear
+   which tree a sound came out of. */
+.library__category-button--user {
+  color: var(--daw-accent);
 }
 
 .library__category-button {
@@ -1066,6 +1129,45 @@ body {
   color: var(--daw-accent);
 }
 
+.pl__add:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.pl__add:disabled:hover {
+  border-color: var(--daw-border);
+  color: var(--ev-c-text-1);
+}
+
+/* The snap switch and the chosen division both read as pressed buttons rather
+   than as a checkbox: they say which grid is in force, and the one in force is
+   the one lit up. */
+.pl__add[aria-pressed='true'] {
+  border-color: var(--daw-accent);
+  color: var(--daw-accent);
+}
+
+/* A label and its row of buttons, kept together when the header wraps. */
+.pl__group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pl__group-label {
+  font-size: 11px;
+  color: var(--ev-c-text-3);
+}
+
+.pl__zoom {
+  min-width: 42px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--ev-c-text-2);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
 .pl__counts {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
@@ -1127,6 +1229,34 @@ body {
 
 .pl__ruler-bar[data-group='true'] {
   border-left-color: var(--daw-border);
+}
+
+/* The playhead's mark in the ruler. The line down the lanes scrolls out of
+   sight sideways; this is the part that is always in the strip you are already
+   looking at, and the whole ruler is the handle for dragging it. */
+.pl__ruler {
+  cursor: ew-resize;
+}
+
+.pl__ruler-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  margin-left: -1px;
+  background: var(--daw-led);
+  pointer-events: none;
+}
+
+/* A small flag on top, so the line is findable against the bar numbers. */
+.pl__ruler-cursor::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -3px;
+  border-top: 5px solid var(--daw-led);
+  border-left: 3px solid transparent;
+  border-right: 3px solid transparent;
 }
 
 .pl-track {
@@ -1221,12 +1351,22 @@ body {
   position: relative;
   flex: 0 0 var(--pl-lane-w);
   box-sizing: border-box;
-  /* Bar lines, beat lines, and a heavier one every bar of the four-bar group. */
+  /* Four weights, heaviest first: the four-bar group, the bar, the beat, and —
+     a step below all of them, and only when the snap is finer than a beat and
+     the zoom leaves room — the cell. `--pl-cell-color` is what switches the last
+     one off; it is a colour rather than a width so that the gradients stay
+     written out once, here, instead of being rebuilt wherever the setting
+     changes. */
   background-color: #191920;
   background-image:
     repeating-linear-gradient(to right, #3a3a48 0 1px, transparent 1px var(--pl-group-w)),
     repeating-linear-gradient(to right, #303039 0 1px, transparent 1px var(--pl-bar-w)),
-    repeating-linear-gradient(to right, #26262f 0 1px, transparent 1px var(--pl-beat-w));
+    repeating-linear-gradient(to right, #26262f 0 1px, transparent 1px var(--pl-beat-w)),
+    repeating-linear-gradient(
+      to right,
+      var(--pl-cell-color) 0 1px,
+      transparent 1px var(--pl-cell-w)
+    );
   cursor: crosshair;
   touch-action: none;
 }
@@ -1268,6 +1408,46 @@ body {
   pointer-events: none;
 }
 
+/* The clip's own content: the notes it will play, and where its pattern starts
+   over. Both only pass pointer events through — the clip's body is what drags
+   it, and its edges are what resize it. */
+
+.pl-clip__notes {
+  position: absolute;
+  /* Inset top and bottom so a note at either end of the pattern's range is not
+     flush against the clip's border. */
+  inset: 3px 0;
+  pointer-events: none;
+}
+
+/* Dark ink rather than the channel's colour: the clip's own background is a
+   bright one, and a dark mark reads on all of them. */
+.pl-clip__note {
+  position: absolute;
+  height: 2px;
+  border-radius: 1px;
+  background: rgba(15, 18, 36, 0.65);
+}
+
+.pl-clip__loop {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: 1px dashed rgba(15, 18, 36, 0.55);
+  pointer-events: none;
+}
+
+/* The selection rectangle. On the grid rather than in a lane — it has to be able
+   to run down a column of tracks — and above the clips, which have no z-index of
+   their own, but below the ruler and the track headers, which are pinned. */
+.pl-marquee {
+  position: absolute;
+  z-index: 1;
+  border: 1px solid var(--daw-accent);
+  background: rgba(108, 140, 255, 0.16);
+  pointer-events: none;
+}
+
 .pl-clip__handle {
   position: absolute;
   top: 0;
@@ -1297,6 +1477,26 @@ body {
   background: var(--daw-led);
   box-shadow: 0 0 6px var(--daw-led);
   pointer-events: none;
+}
+
+/* Stopped, the playhead is where the song will start rather than where it is
+   playing, and it should not compete with the transport for attention. */
+.pl-playhead[data-playing='false'] {
+  box-shadow: none;
+  opacity: 0.7;
+}
+
+/* Two pixels is not something to aim at. This is what takes the press; the rest
+   of the line keeps passing it through to whatever is underneath. */
+.pl-playhead__grab {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 9px;
+  transform: translateX(-50%);
+  cursor: ew-resize;
+  pointer-events: auto;
 }
 
 /* Piano Roll */
@@ -1843,4 +2043,124 @@ body {
   border-color: transparent;
   background: #e4635f;
   color: #ffffff;
+}
+
+/* Export dialog */
+
+/* Wider than a confirmation: it is a small form rather than one sentence. */
+.export {
+  width: 440px;
+  max-width: 440px;
+}
+
+.export__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.export__hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--ev-c-text-3);
+}
+
+.export__grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.export__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.export__row--check {
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ev-c-text-1);
+  cursor: pointer;
+}
+
+.export__label {
+  flex-shrink: 0;
+  width: 64px;
+  font-size: 12px;
+  color: var(--ev-c-text-3);
+}
+
+.export__input {
+  width: 104px;
+  padding: 0 6px;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: #14141a;
+  color: var(--ev-c-text-1);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 24px;
+  font-variant-numeric: tabular-nums;
+}
+
+.export__input:focus {
+  border-color: var(--daw-accent);
+  outline: none;
+}
+
+.export__pair {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.export__unit {
+  font-size: 11px;
+  color: var(--ev-c-text-3);
+}
+
+.export__note {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ev-c-text-3);
+}
+
+.export__note--warn {
+  color: #e0a33c;
+}
+
+.export__stage {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.export__bar {
+  height: 8px;
+  border-radius: 4px;
+  background: #14141a;
+  overflow: hidden;
+}
+
+.export__fill {
+  height: 100%;
+  border-radius: 4px;
+  background: var(--daw-accent);
+  /* Width is set per frame from the render's own progress; the transition just
+     keeps the steps between those reports from reading as jumps. */
+  transition: width 120ms linear;
+}
+
+/* Selectable, because the point of showing a path is to be able to copy it. */
+.export__path {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--ev-c-text-1);
+  word-break: break-all;
+  user-select: text;
 }

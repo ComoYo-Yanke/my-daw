@@ -27,6 +27,7 @@ import {
 } from './step'
 import {
   makeDefaultTracks,
+  MIN_CLIP_LENGTH_BARS,
   MIN_PLAYLIST_BARS,
   type Channel,
   type DawState,
@@ -48,6 +49,11 @@ export const PROJECT_FORMAT = 'mydaw'
  * 2 起时间线有了轨道和时间线长度。v1 的文件没有这两个字段，不需要单独的迁移分支：
  * 轨道回落成默认的几条、clip 的 trackId 回落到第一条轨、长度回落到最小值，都在下面的
  * 兜底里发生。
+ *
+ * 之后加字段（比如 clip 可以落在小节中间、播放起点 `songStartBar`）没有再动版本号：
+ * 没有哪个字段换了形状，新字段都走逐字段兜底。代价说清楚——用这一版存出来的文件，被
+ * 更老的版本打开时，片段会被四舍五入回整小节、播放起点会被丢掉，属于「能打开但缺东西」，
+ * 而不是打不开。
  */
 export const PROJECT_VERSION = 2
 
@@ -84,6 +90,13 @@ export type ProjectFile = {
   /** 时间线显示多少小节。只增不减，所以存的是用户铺开的那一段。 */
   playlistBars: number
   playlistClips: PlaylistClip[]
+  /**
+   * 整首歌从哪里开始播，单位小节。
+   *
+   * 和 clip 的位置一样按小节存，不按秒：改速度时播放线要跟着音乐走，而不是滑到
+   * 别的小节上。v2 文件没有这个字段，回落到 0。
+   */
+  songStartBar: number
 }
 
 // 兜底值
@@ -136,7 +149,10 @@ export function serializeProject(state: DawState): ProjectFile {
     playlistTracks: state.playlistTracks,
     // 存的是用户铺开的那一段，不是「现画的这一屏」——读回来时时间线不会缩回去。
     playlistBars: state.playlistBars,
-    playlistClips: state.playlistClips
+    playlistClips: state.playlistClips,
+    // 播放起点存下来，但 `playlistSnapEnabled` / `playlistSnapDivision` 不存：
+    // 和钢琴卷帘的吸附设置一样，它们说的是「接下来怎么拖」，不是工程长什么样。
+    songStartBar: state.songStartBar
   }
 }
 
@@ -196,7 +212,10 @@ export function parseProjectFile(text: string): ParseResult {
         MIN_PLAYLIST_BARS,
         Math.round(num(raw.playlistBars, MIN_PLAYLIST_BARS))
       ),
-      playlistClips: parseClips(raw.playlistClips, tracks)
+      playlistClips: parseClips(raw.playlistClips, tracks),
+      // 负的开始位置没有意义；上界不在这里挡，时间线的长度随时会变，读的时候
+      // 会再夹一次（`selectSongStartBar`）。
+      songStartBar: Math.max(0, num(raw.songStartBar, 0))
     }
   }
 }
@@ -336,8 +355,9 @@ function parseTracks(value: unknown): PlaylistTrack[] {
 /**
  * 时间线上的 clip。
  *
- * `lengthBars` 是 clip 自己的长度，和里面的 pattern 多长无关，所以这里只挡住「小于一小节」
- * ——那是唯一没有意义的长度。v1 文件没有 `trackId`，文件也可能写了一条已经不在的轨道，
+ * `lengthBars` 是 clip 自己的长度，和里面的 pattern 多长无关，所以这里只挡住「短过一个拍」
+ * ——那是唯一没有意义的长度。位置和长度都**不取整**：关掉吸附以后片段本来就落在小节中间，
+ * 取整会把用户摆好的东西挪走。v1 文件没有 `trackId`，文件也可能写了一条已经不在的轨道，
  * 两种都落到第一条轨上，也就是它们本来在的地方。
  */
 function parseClips(value: unknown, tracks: PlaylistTrack[]): PlaylistClip[] {
@@ -355,8 +375,8 @@ function parseClips(value: unknown, tracks: PlaylistTrack[]): PlaylistClip[] {
       id: id(entry.id),
       patternId,
       trackId: tracks.some((track) => track.id === trackId) ? trackId : fallbackTrackId,
-      startBar: Math.max(0, Math.round(num(entry.startBar, 0))),
-      lengthBars: Math.max(1, Math.round(num(entry.lengthBars, 1)))
+      startBar: Math.max(0, num(entry.startBar, 0)),
+      lengthBars: Math.max(MIN_CLIP_LENGTH_BARS, num(entry.lengthBars, 1))
     })
   }
   return clips

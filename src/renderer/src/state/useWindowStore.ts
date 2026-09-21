@@ -129,6 +129,104 @@ export function windowTitle(id: WindowId): string {
 }
 
 // ---------------------------------------------------------------------------
+// Layout presets
+// ---------------------------------------------------------------------------
+
+/**
+ * How much daylight a preset leaves around a window.
+ *
+ * Taken out of the band a window is given rather than added between two of them:
+ * neighbours are written as `width: 0.5` each, and the gap falls out of that
+ * without anyone having to work out where the second one starts.
+ */
+const GUTTER_PX = 12
+
+/**
+ * A window's place in a preset, as fractions of the workspace.
+ *
+ * Fractions rather than pixels because a preset is applied to whatever size the
+ * workspace happens to be — the app window is resizable, and two windows that
+ * share the width have to go on sharing it. Read as a band rather than as a
+ * rectangle: `{ x: 0.5, width: 0.5 }` is "the right half", with the gutter taken
+ * out of the band it lands in.
+ */
+type LayoutSlot = {
+  x: number
+  y: number
+  width: number
+  height: number
+  /** Whether the preset wants this window on screen at all. */
+  open: boolean
+}
+
+export type LayoutId = 'arrange' | 'roll' | 'library'
+
+export type LayoutPreset = {
+  id: LayoutId
+  label: string
+  /** What it is for. The menu shows this as its tooltip. */
+  hint: string
+  /**
+   * All four windows, not just the ones it opens.
+   *
+   * A preset is a whole arrangement, so it has to say where a window goes even
+   * when it is leaving it shut: the next one to be opened from the menu should
+   * land somewhere the layout put it, not wherever the last layout left it.
+   */
+  slots: Record<WindowId, LayoutSlot>
+}
+
+/**
+ * The layouts the 窗口 menu offers.
+ *
+ * Three ways of working rather than three arrangements of the same panels: which
+ * windows are up, and how the workspace is split between them. Applying one
+ * docks everything and unpins anything, because that is what a layout is — the
+ * point of picking one is that it comes out the same every time.
+ *
+ * 编曲 is the arrangement the app opens in. `resetLayout` also gets there, in the
+ * pixel sizes the app was built with rather than in halves of whatever the
+ * workspace is now; both are kept because a preset is chosen and a reset is
+ * reached for when something is lost, and reaching for the first is not how
+ * anyone finds their way back from the second.
+ */
+export const LAYOUT_PRESETS: LayoutPreset[] = [
+  {
+    id: 'arrange',
+    label: '编曲',
+    hint: '机架在上、时间线在下，右边一条留给采样库',
+    slots: {
+      'channel-rack': { x: 0, y: 0, width: 0.62, height: 0.48, open: true },
+      playlist: { x: 0, y: 0.48, width: 0.62, height: 0.52, open: true },
+      'sample-browser': { x: 0.62, y: 0, width: 0.38, height: 1, open: false },
+      'piano-roll': { x: 0.62, y: 0, width: 0.38, height: 1, open: false }
+    }
+  },
+  {
+    id: 'roll',
+    label: '钢琴卷帘',
+    hint: '机架在上，卷帘占满下面，时间线让位',
+    slots: {
+      'channel-rack': { x: 0, y: 0, width: 1, height: 0.34, open: true },
+      'piano-roll': { x: 0, y: 0.34, width: 1, height: 0.66, open: true },
+      playlist: { x: 0, y: 0.34, width: 1, height: 0.66, open: false },
+      'sample-browser': { x: 0.62, y: 0, width: 0.38, height: 1, open: false }
+    }
+  },
+  {
+    id: 'library',
+    label: '采样库',
+    hint: '机架在左、采样库在右，两边都占满高度',
+    slots: {
+      'channel-rack': { x: 0, y: 0, width: 0.58, height: 1, open: true },
+      'sample-browser': { x: 0.58, y: 0, width: 0.42, height: 1, open: true },
+      playlist: { x: 0, y: 0.5, width: 1, height: 0.5, open: false },
+      'piano-roll': { x: 0, y: 0.34, width: 1, height: 0.66, open: false }
+    }
+  }
+]
+
+// ---------------------------------------------------------------------------
 // Geometry
 // ---------------------------------------------------------------------------
 
@@ -199,6 +297,26 @@ function fitResize(rect: Rect, bounds: Rect, mode: WindowMode): Rect {
 /** The same rect, so a no-op change can keep the window's identity intact. */
 function sameRect(a: Rect, b: Rect): boolean {
   return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height
+}
+
+/**
+ * A preset's slot, as a rectangle in the workspace.
+ *
+ * The minimum size wins over the fraction: a workspace small enough that half of
+ * it is narrower than a window may be leaves the two overlapping, which is a
+ * layout that can still be worked in and dragged apart. Quietly shrinking a
+ * window past its minimum instead would give back something that cannot be
+ * resized or read.
+ */
+function slotRect(slot: LayoutSlot, area: Rect): Rect {
+  return {
+    // Half the gutter on the outside, so a window filling the workspace sits the
+    // same distance from all four of its edges.
+    x: area.x + GUTTER_PX / 2 + Math.round(slot.x * area.width),
+    y: area.y + GUTTER_PX / 2 + Math.round(slot.y * area.height),
+    width: Math.max(MIN_WINDOW_WIDTH, Math.round(slot.width * area.width) - GUTTER_PX),
+    height: Math.max(MIN_WINDOW_HEIGHT, Math.round(slot.height * area.height) - GUTTER_PX)
+  }
 }
 
 /**
@@ -428,6 +546,8 @@ type WindowStore = {
   setGeometry: (id: WindowId, rect: Partial<Rect>) => void
   setWorkArea: (rect: Rect) => void
   resetLayout: () => void
+  /** Put every window where one of the named layouts says. */
+  applyLayout: (id: LayoutId) => void
 }
 
 /** The layout as this launch found it, before any of the actions have run. */
@@ -611,6 +731,54 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
         )
       ),
       topZ: WINDOW_DEFS.length
+    })
+    persistWindowLayout()
+  },
+
+  /**
+   * Put every window where a preset says, in one go.
+   *
+   * The whole stack at once rather than window by window: a preset is a complete
+   * arrangement, and applying it in pieces would show whoever picked it two
+   * layouts they never asked for on the way through.
+   *
+   * Nothing happens before the workspace has been measured. The slots are
+   * fractions of it, so an unmeasured one would put every window at the origin
+   * at its minimum size — and then write that down, which is exactly the corner
+   * `setWorkArea` refuses to fall into for the same reason.
+   */
+  applyLayout: (id) => {
+    const preset = LAYOUT_PRESETS.find((item) => item.id === id)
+    if (preset === undefined) return
+
+    set((state) => {
+      const area = state.workArea
+      if (!(area.width > 0) || !(area.height > 0)) return state
+
+      return {
+        windows: state.windows.map((win, index) => {
+          const slot = preset.slots[win.id]
+          const rect = slotRect(slot, area)
+          return refit(
+            {
+              ...win,
+              mode: 'docked',
+              closed: !slot.open,
+              minimized: false,
+              alwaysOnTop: false,
+              position: { x: rect.x, y: rect.y },
+              size: { width: rect.width, height: rect.height },
+              // Back to the stacking the windows are declared in — the rack
+              // behind the timeline, the roll in front of both — so that picking
+              // the same layout twice, or two layouts in a row, is the same
+              // picture rather than one that remembers what was focused last.
+              zIndex: index + 1
+            },
+            area
+          )
+        }),
+        topZ: state.windows.length
+      }
     })
     persistWindowLayout()
   }

@@ -13,13 +13,27 @@ export type OpenedProject = {
   json: string
 }
 
+/** One sample the scan found in the user's folder. */
+export type ScannedSample = {
+  path: string
+  name: string
+  /** The subfolder it came from, or '' for one at the top level. */
+  category: string
+}
+
 /** Mirrors the `api` object exposed by src/preload/index.ts. */
 export type DawApi = {
   openSampleFiles: () => Promise<SampleFilePayload[]>
   readSampleFiles: (paths: string[]) => Promise<SampleFilePayload[]>
   saveProject: (json: string, path: string | null) => Promise<{ path: string } | null>
   openProject: () => Promise<OpenedProject | null>
+  readSettings: () => Promise<Record<string, unknown>>
+  writeSettings: (settings: Record<string, unknown>) => Promise<void>
+  chooseSampleFolder: () => Promise<string | null>
+  scanSampleFolder: (folder: string) => Promise<ScannedSample[]>
   confirmDiscard: () => Promise<boolean>
+  chooseExportPath: (defaultName: string, format: 'wav' | 'mp3') => Promise<string | null>
+  writeExportFile: (data: Uint8Array, path: string) => Promise<void>
 }
 
 declare global {
