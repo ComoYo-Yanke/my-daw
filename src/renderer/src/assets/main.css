@@ -2230,3 +2230,133 @@ body {
   word-break: break-all;
   user-select: text;
 }
+
+/* Sample picker */
+
+/* Wider than a confirmation and fixed in width, so the list does not resize as
+   the categories inside it change. */
+.picker {
+  width: 460px;
+  max-width: 460px;
+}
+
+.picker__title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.picker__hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--ev-c-text-3);
+}
+
+.picker__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.picker__label {
+  flex-shrink: 0;
+  width: 40px;
+  font-size: 12px;
+  color: var(--ev-c-text-3);
+}
+
+.picker__input {
+  flex: 1;
+  padding: 0 6px;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: #14141a;
+  color: var(--ev-c-text-1);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 24px;
+}
+
+/* The list scrolls, the rest of the dialog does not: a user's folder can hold
+   hundreds of files, and a dialog that grew to fit them would be taller than the
+   window it is in.
+   The gap is small because a section label adds to it: a heading has to sit closer
+   to the entries it names than to the group above it. */
+.picker__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 46vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+/* Which of the two sources the entries under it came from. A category name alone
+   would not say: a folder of one's own is just as likely to be called "Drums". */
+.picker__section {
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ev-c-text-1);
+}
+
+.picker__section:not(:first-child) {
+  padding-top: 10px;
+  border-top: 1px solid var(--daw-border);
+}
+
+.picker__group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.picker__group-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ev-c-text-3);
+}
+
+.picker__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.picker__chip {
+  padding: 0 8px;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ev-c-text-1);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.picker__chip:hover {
+  border-color: var(--daw-accent);
+  color: var(--daw-accent);
+}
+
+/* What the channel is playing now. Marked with a tick as well as a colour, so it
+   is findable in a wrapping list rather than only visible once read. */
+.picker__chip[data-current='true'] {
+  border-color: var(--daw-accent);
+  color: var(--daw-accent);
+  font-weight: 700;
+}
+
+.picker__chip[data-current='true']::before {
+  content: '✓ ';
+}
+
+.picker__empty {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--ev-c-text-3);
+}

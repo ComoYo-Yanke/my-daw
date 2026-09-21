@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { LIBRARY } from '../audio/library'
-import { useDawStore, type UserSample } from '../state/useDawStore'
+import { ROOT_CATEGORY_LABEL, useDawStore, type UserSample } from '../state/useDawStore'
 
 /** One category of the user's own samples, flattened for drawing. */
 type UserCategory = {
@@ -8,9 +8,6 @@ type UserCategory = {
   label: string
   samples: UserSample[]
 }
-
-/** What a sample sitting at the top of the folder is filed under. */
-const ROOT_LABEL = '（根目录）'
 
 /**
  * The sample library, as a sidebar down the left of the rack.
@@ -69,7 +66,7 @@ function SampleBrowser(): React.JSX.Element {
     }
     return [...byCategory.entries()].map(([category, samples]) => ({
       id: `user:${category}`,
-      label: category === '' ? ROOT_LABEL : category,
+      label: category === '' ? ROOT_CATEGORY_LABEL : category,
       samples
     }))
   }, [userSamples])

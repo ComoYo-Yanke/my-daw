@@ -2,6 +2,7 @@ import { useState } from 'react'
 import ChannelSteps from './ChannelSteps'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu'
 import Knob from './Knob'
+import SamplePicker from './SamplePicker'
 import StepCountSwitch from './StepCountSwitch'
 import WaveformThumbnail from './WaveformThumbnail'
 import { useStepCursor } from '../hooks/useStepCursor'
@@ -77,6 +78,8 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
   const [stepsOpen, setStepsOpen] = useState(true)
   /** Where the row's right-click menu is open, or null. */
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  /** Whether this row's sound picker is open. */
+  const [picking, setPicking] = useState(false)
 
   // Each row reads its own position: channels loop over their own step counts,
   // so there is no single "current step" the rack could be handed from above.
@@ -141,13 +144,16 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
   /**
    * The row's own menu.
    *
-   * Delete is the one action that reaches past this row: a channel's notes and
-   * steps are filed under its id in every pattern, so they all go with it. That
-   * is one undo step, which is what it relies on instead of asking first.
+   * Two of these reach past the row, for the same reason: a channel is one thing
+   * however many patterns use it. Delete takes its notes and steps with it — they
+   * are filed under its id in every pattern — and 更换音色 changes what every
+   * pattern's use of it sounds like. Delete is one undo step, which is what it
+   * relies on instead of asking first; a sound change is one too.
    */
   const menuItems: ContextMenuItem[] = [
     { label: '重命名', run: () => setDraft(channel.name) },
     { label: '复制', run: () => duplicateChannel(channel.id) },
+    { label: '更换音色…', run: () => setPicking(true) },
     { label: '删除', danger: true, run: () => removeChannel(channel.id) }
   ]
 
@@ -313,6 +319,14 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
           to the row and reopen it. */}
       {menu !== null && (
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
+      )}
+
+      {picking && (
+        <SamplePicker
+          channels={[channel]}
+          context={`换掉「${channel.name}」的采样。音色是通道的属性，所以这个通道在所有 Pattern 里的音色都会跟着变；音符、步进、音量和声像都不动。`}
+          onClose={() => setPicking(false)}
+        />
       )}
     </>
   )

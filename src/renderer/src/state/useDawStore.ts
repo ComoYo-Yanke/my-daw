@@ -89,6 +89,16 @@ export type UserSample = {
 const USER_SAMPLE_FOLDER_KEY = 'userSampleFolder'
 
 /**
+ * What a sample sitting at the top of the folder is filed under.
+ *
+ * Its own export rather than a literal in the sidebar, because the folder is now
+ * drawn in two places — the sidebar and the sample picker — and a category that
+ * was named one way in one of them and another way in the other would read as two
+ * different categories.
+ */
+export const ROOT_CATEGORY_LABEL = '（根目录）'
+
+/**
  * A rack channel: one mixer strip that plays one sample.
  *
  * Channels are what the user tweaks; samples are just the audio they point at.
@@ -443,6 +453,22 @@ export type DawState = {
    * way an imported sample does.
    */
   addUserSample: (path: string) => Promise<void>
+  /**
+   * Point a channel at a different sample, and sound it once.
+   *
+   * Named by path, the way a project file names a sample: a `library://`
+   * pseudo-path for a built-in, an absolute path for a file on disk. Nothing new
+   * is invented to say where a sample comes from.
+   *
+   * This is the channel that changes, not one of its rows, so every pattern that
+   * uses it changes with it. Nothing else about the channel is touched — not its
+   * name, not its level, pan, colour, steps or notes — because changing the sound
+   * under a part that has already been written is the whole point of the gesture,
+   * and a channel that had to be renamed to match would be a different gesture.
+   */
+  replaceChannelSample: (channelId: string, path: string) => Promise<void>
+  /** The same, with the sample chosen out of a file dialog instead of a list. */
+  replaceChannelSampleFromFile: (channelId: string) => Promise<void>
   triggerChannel: (channelId: string) => Promise<void>
   stopAll: () => void
   renameChannel: (channelId: string, name: string) => void
@@ -1313,6 +1339,39 @@ export const useDawStore = create<DawState>((set, get) => {
   }
 
   /**
+   * Swap the sample under an existing channel, and play the new one once.
+   *
+   * The sample the channel was playing stays in the pool. It may well still be
+   * another channel's — sharing one sample is legal — and even when it is
+   * nobody's, the snapshot `pushUndo` has just taken points back at it, so an
+   * undo that could not find it would restore a channel that cannot make a sound.
+   *
+   * The strip is left alone, which is what makes this safe mid-playback: every
+   * note the scheduler reserves looks the sample up again from the channel, so the
+   * next note plays the new sound while the ones already sounding finish on the
+   * old one. There is no `applyMix` call for the same reason — volume, pan, mute
+   * and solo all live on the strip, and not one of them changed.
+   *
+   * It is heard straight away because that is the only way to browse sounds:
+   * clicking through a list works if clicking plays what is clicked.
+   */
+  const installSampleOnChannel = async (channelId: string, sample: Sample): Promise<void> => {
+    pushUndo(`replace-sample:${channelId}`)
+    set((state) => ({
+      samples: [...state.samples, sample],
+      channels: state.channels.map((channel) =>
+        channel.id === channelId ? { ...channel, sampleId: sample.id } : channel
+      ),
+      error: null
+    }))
+
+    await resumeAudioContext()
+    const strip = getStrip(channelId)
+    if (strip) triggerStrip(strip, sample.buffer)
+    showToast(`已换成 ${sample.name}`)
+  }
+
+  /**
    * Replace one channel's notes in the current pattern, leaving every other
    * channel — and every other pattern — untouched.
    */
@@ -2021,6 +2080,76 @@ export const useDawStore = create<DawState>((set, get) => {
         showToast(`已添加 ${name}`)
       } catch (cause) {
         set({ error: `无法解码 ${path}：${errorMessage(cause)}` })
+      }
+    },
+
+    /**
+     * Change which sample a channel plays, where the sample comes from a path.
+     *
+     * The path is whatever the picker has for the entry that was clicked — a
+     * library pseudo-path for a built-in, an absolute path for a file in the
+     * user's folder — and the two are told apart by `isLibraryPath`, the same way
+     * opening a project tells them apart.
+     *
+     * Every way out of here is a return rather than a throw: a sample that cannot
+     * be found leaves the channel playing what it was playing, and says so. Losing
+     * a part because a file moved would be a poor trade for a sound change.
+     */
+    replaceChannelSample: async (channelId, path) => {
+      if (!get().channels.some((channel) => channel.id === channelId)) return
+
+      try {
+        let sample: Sample
+        if (isLibraryPath(path)) {
+          const built = renderLibrarySample(path)
+          if (built === null) {
+            set({ error: `采样库里没有 ${path}` })
+            return
+          }
+          sample = makeSample(built.sample.name, path, built.buffer)
+        } else {
+          const files = await window.api.readSampleFiles([path])
+          const file = files[0]
+          if (file === undefined) {
+            set({ error: `打不开 ${path}，文件可能已被移动或删除` })
+            return
+          }
+          const buffer = await decodeAudioData(toArrayBuffer(file.data))
+          sample = makeSample(file.name.replace(/\.[^.]+$/, ''), file.path, buffer)
+        }
+
+        await installSampleOnChannel(channelId, sample)
+      } catch (cause) {
+        set({ error: `换音色失败：${errorMessage(cause)}` })
+      }
+    },
+
+    /**
+     * The same, with the sample picked out of a file dialog instead of a list.
+     *
+     * The dialog hands back the bytes it read, so they are decoded as they are
+     * rather than being read a second time by path — one less thing that can fail
+     * between picking a file and hearing it. A dialog the user cancelled comes
+     * back empty, and that is a no-op rather than an error.
+     *
+     * Only the first file is used. The dialog is the one that imports samples and
+     * it takes several because importing several makes several channels; a
+     * replacement has one channel to fill, so picking more than one is not a
+     * gesture this dialog can honour.
+     */
+    replaceChannelSampleFromFile: async (channelId) => {
+      try {
+        const files = await window.api.openSampleFiles()
+        const file = files[0]
+        if (file === undefined) return
+
+        const buffer = await decodeAudioData(toArrayBuffer(file.data))
+        await installSampleOnChannel(
+          channelId,
+          makeSample(file.name.replace(/\.[^.]+$/, ''), file.path, buffer)
+        )
+      } catch (cause) {
+        set({ error: `换音色失败：${errorMessage(cause)}` })
       }
     },
 

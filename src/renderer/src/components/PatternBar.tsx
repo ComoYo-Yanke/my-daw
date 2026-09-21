@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import ConfirmDialog from './ConfirmDialog'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu'
-import { useDawStore } from '../state/useDawStore'
+import SamplePicker from './SamplePicker'
+import { useDawStore, type Channel, type Pattern } from '../state/useDawStore'
+import { EMPTY_STEPS, hasSteps } from '../types/step'
 
 /** Where a right-click opened a menu, and which tab it was on. */
 type Menu = { patternId: string; x: number; y: number }
@@ -28,6 +30,7 @@ function PatternBar(): React.JSX.Element {
   const renamePattern = useDawStore((state) => state.renamePattern)
   const playMode = useDawStore((state) => state.playMode)
   const setPlayMode = useDawStore((state) => state.setPlayMode)
+  const channels = useDawStore((state) => state.channels)
 
   /** Non-null while a tab's name is being edited. */
   const [draft, setDraft] = useState<{ id: string; name: string } | null>(null)
@@ -35,6 +38,8 @@ function PatternBar(): React.JSX.Element {
   const [menu, setMenu] = useState<Menu | null>(null)
   /** A deletion that has to be confirmed first, or null. */
   const [pending, setPending] = useState<Pending | null>(null)
+  /** The pattern whose sound picker is open, or null. */
+  const [picker, setPicker] = useState<string | null>(null)
 
   const commitRename = (): void => {
     if (draft === null) return
@@ -65,14 +70,39 @@ function PatternBar(): React.JSX.Element {
     setPending({ patternId, name, clips: used })
   }
 
-  const menuItems = (patternId: string, name: string): ContextMenuItem[] => [
-    { label: '重命名', run: () => setDraft({ id: patternId, name }) },
-    { label: '复制', run: () => duplicatePattern(patternId) },
+  /**
+   * Which channels a pattern actually plays.
+   *
+   * The union of the two ways a pattern can address the rack — the notes it holds
+   * for a channel, and the steps it has switched on for one — because either of
+   * them is the pattern using that channel, and either is a reason to want its
+   * sound changed. Rack order, so the list reads the way the rack does.
+   *
+   * A channel whose entry is nothing but steps that are off is not listed: the
+   * entry exists, but this pattern never sounds it.
+   */
+  const usedChannels = (pattern: Pattern): Channel[] =>
+    channels.filter(
+      (channel) =>
+        (pattern.notesByChannel[channel.id]?.length ?? 0) > 0 ||
+        hasSteps(pattern.stepsByChannel[channel.id] ?? EMPTY_STEPS, channel.stepCount)
+    )
+
+  const menuItems = (pattern: Pattern): ContextMenuItem[] => [
+    { label: '重命名', run: () => setDraft({ id: pattern.id, name: pattern.name }) },
+    { label: '复制', run: () => duplicatePattern(pattern.id) },
+    {
+      label: '更换音色…',
+      // Nothing in the pattern plays a channel, so there is nothing to change
+      // the sound of.
+      disabled: usedChannels(pattern).length === 0,
+      run: () => setPicker(pattern.id)
+    },
     {
       label: '删除',
       danger: true,
       disabled: patterns.length <= 1,
-      run: () => askDelete(patternId, name)
+      run: () => askDelete(pattern.id, pattern.name)
     }
   ]
 
@@ -81,6 +111,7 @@ function PatternBar(): React.JSX.Element {
   // to act on.
   const menuPattern =
     menu === null ? undefined : patterns.find((item) => item.id === menu.patternId)
+  const pickerPattern = picker === null ? undefined : patterns.find((item) => item.id === picker)
 
   return (
     <div className="pattern-bar">
@@ -157,8 +188,16 @@ function PatternBar(): React.JSX.Element {
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          items={menuItems(menuPattern.id, menuPattern.name)}
+          items={menuItems(menuPattern)}
           onClose={() => setMenu(null)}
+        />
+      )}
+
+      {pickerPattern !== undefined && (
+        <SamplePicker
+          channels={usedChannels(pickerPattern)}
+          context={`换掉 Pattern「${pickerPattern.name}」里某个通道的采样。音色是通道的属性，所以这个通道在所有 Pattern 里的音色都会跟着变；音符、步进、音量和声像都不动。`}
+          onClose={() => setPicker(null)}
         />
       )}
 
