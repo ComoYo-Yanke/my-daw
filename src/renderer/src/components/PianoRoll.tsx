@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { usePanelSize } from '../hooks/usePanelSize'
 import { usePianoRollHead } from '../hooks/usePianoRollHead'
 import { usePlayheadSec } from '../hooks/usePlayheadSec'
 import {
@@ -114,16 +113,6 @@ const MARQUEE_THRESHOLD_PX = 4
 /** How much one zoom notch multiplies by, for the toolbar's buttons. */
 const ZOOM_STEP = 1.25
 
-/** The smallest the panel may be dragged to, in pixels. */
-const MIN_PANEL_WIDTH_PX = 400
-const MIN_PANEL_HEIGHT_PX = 300
-
-/** The share of the window's height the panel opens at, until it is resized. */
-const DEFAULT_PANEL_HEIGHT_RATIO = 0.66
-
-/** Where the panel's size is kept between launches. A workspace setting, not a project one. */
-const PANEL_SIZE_KEY = 'my-daw:piano-roll-size'
-
 /** One shared empty selection, so "nothing is selected" is one identity. */
 const NO_IDS: readonly string[] = []
 
@@ -139,7 +128,6 @@ const NO_IDS: readonly string[] = []
  * every position drawn here is that note's own time rather than a step index.
  */
 function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
-  const closePianoRoll = useDawStore((state) => state.closePianoRoll)
   const addNote = useDawStore((state) => state.addNote)
   const addNotes = useDawStore((state) => state.addNotes)
   const moveNotes = useDawStore((state) => state.moveNotes)
@@ -163,16 +151,6 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<Drag | null>(null)
-  const panelRef = useRef<HTMLElement>(null)
-
-  // The panel's own size, dragged from its edges and remembered between launches.
-  const { size: panelSize, beginResize } = usePanelSize(
-    PANEL_SIZE_KEY,
-    panelRef,
-    { width: null, height: window.innerHeight * DEFAULT_PANEL_HEIGHT_RATIO },
-    MIN_PANEL_WIDTH_PX,
-    MIN_PANEL_HEIGHT_PX
-  )
 
   /**
    * Whether Shift is down, followed on the window rather than read off events.
@@ -772,46 +750,10 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
   const positionBeat = Math.floor((lineSec % barSec) / beatSec) + 1
 
   return (
-    <section
-      className="piano-roll"
-      aria-label="钢琴卷帘"
-      ref={panelRef}
-      // Height is always ours; width only once an edge has been dragged, so a
-      // panel nobody has resized still follows the window the way it used to.
-      style={{
-        height: `${panelSize.height}px`,
-        width: panelSize.width === null ? undefined : `${panelSize.width}px`
-      }}
-    >
-      {/* The panel's edges. They lie over the content, which is what keeps a grab
-          at the very edge from landing on the grid behind it. */}
-      <span
-        className="pr-resize"
-        data-edge="top"
-        title="拖动改变高度"
-        onPointerDown={(event) => beginResize('top', event)}
-      />
-      <span
-        className="pr-resize"
-        data-edge="left"
-        title="拖动改变宽度"
-        onPointerDown={(event) => beginResize('left', event)}
-      />
-      <span
-        className="pr-resize"
-        data-edge="right"
-        title="拖动改变宽度"
-        onPointerDown={(event) => beginResize('right', event)}
-      />
-      <span
-        className="pr-resize"
-        data-edge="corner"
-        title="拖动同时改变宽高"
-        onPointerDown={(event) => beginResize('corner', event)}
-      />
-
+    <section className="piano-roll" aria-label="钢琴卷帘">
+      {/* No title and no × of its own: the window frame around this holds both,
+          and the frame is also what carries the edges a resize is dragged from. */}
       <header className="pr__header">
-        <span className="pr__title">钢琴卷帘 · {channel.name}</span>
         <span className="pr__pattern" title="当前 Pattern">
           {patternName}
         </span>
@@ -820,15 +762,6 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
             ? `${notes.length} 个音符 · ${bpm} BPM · ${lengthBars} 小节 · ${sequenceLengthSec.toFixed(2)}s`
             : '采样缺失'}
         </span>
-        <button
-          type="button"
-          className="pr__close"
-          onClick={closePianoRoll}
-          title="关闭钢琴卷帘"
-          aria-label="关闭钢琴卷帘"
-        >
-          ×
-        </button>
       </header>
 
       <div className="pr__transport">
@@ -961,8 +894,8 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
 
         <span className="pr__hint">
           空白拖动＝画音符（拖出长度）· 「框选」工具或 Shift+拖动＝框选 · 右边缘拖动＝改长度 ·
-          标尺＝播放起点 · 拖动音符＝移动 · 右键＝删除 · 空格＝播放 · Ctrl+Z＝撤销 ·
-          Ctrl+滚轮＝缩放 · Alt＝临时取消吸附
+          标尺＝播放起点 · 拖动音符＝移动 · 右键＝删除 · 空格＝播放 · Ctrl+Z＝撤销 · Ctrl+滚轮＝缩放
+          · Alt＝临时取消吸附
         </span>
       </div>
 

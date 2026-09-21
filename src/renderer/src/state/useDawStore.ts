@@ -41,6 +41,7 @@ import {
   type GridDivision,
   type Note
 } from '../types/note'
+import { useWindowStore } from './useWindowStore'
 import {
   DEFAULT_STEP_COUNT,
   EMPTY_STEPS,
@@ -277,8 +278,6 @@ export type DawState = {
   projectPath: string | null
   /** Whether anything has been edited since the last save. */
   isDirty: boolean
-  /** Whether the sample library sidebar is showing. */
-  libraryOpen: boolean
 
   /** The song arrangement: which pattern plays where, and on which lane. */
   playlistClips: PlaylistClip[]
@@ -344,7 +343,6 @@ export type DawState = {
    * library sample is not a file — it is synthesised on the spot from its path.
    */
   addLibrarySample: (path: string) => Promise<void>
-  toggleLibrary: () => void
   triggerChannel: (channelId: string) => Promise<void>
   stopAll: () => void
   renameChannel: (channelId: string, name: string) => void
@@ -1396,7 +1394,6 @@ export const useDawStore = create<DawState>((set, get) => {
     toast: null,
     projectPath: null,
     isDirty: false,
-    libraryOpen: false,
     playlistClips: [],
     playlistTracks: firstTracks,
     playlistBars: MIN_PLAYLIST_BARS,
@@ -1560,8 +1557,6 @@ export const useDawStore = create<DawState>((set, get) => {
       if (strip) triggerStrip(strip, sample.buffer)
       showToast(`已添加 ${built.sample.name}`)
     },
-
-    toggleLibrary: () => set((state) => ({ libraryOpen: !state.libraryOpen })),
 
     triggerChannel: async (channelId) => {
       const channel = get().channels.find((item) => item.id === channelId)
@@ -1894,11 +1889,7 @@ export const useDawStore = create<DawState>((set, get) => {
       pushUndo('duplicate-pattern')
       set((state) => {
         const patterns = [...state.patterns]
-        patterns.splice(
-          patterns.findIndex((pattern) => pattern.id === patternId) + 1,
-          0,
-          copy
-        )
+        patterns.splice(patterns.findIndex((pattern) => pattern.id === patternId) + 1, 0, copy)
         return { patterns, error: null }
       })
       get().selectPattern(copy.id)
@@ -2015,12 +2006,16 @@ export const useDawStore = create<DawState>((set, get) => {
         get().stopSequence()
       }
       set({ pianoRollChannelId: channelId })
+      // The roll is a window now, and a roll you cannot see is not open. One
+      // way only: closing the window comes back through `closePianoRoll`.
+      useWindowStore.getState().openWindow('piano-roll')
     },
 
     /** Closing the panel stops its transport rather than leaving it playing on. */
     closePianoRoll: () => {
       get().stopSequence()
       set({ pianoRollChannelId: null })
+      useWindowStore.getState().closeWindow('piano-roll')
     },
 
     toggleLoop: () => set((state) => ({ loopEnabled: !state.loopEnabled })),
@@ -2572,6 +2567,10 @@ export const useDawStore = create<DawState>((set, get) => {
       if (mode === get().playMode) return
       get().stopSequence()
       set({ playMode: mode })
+      // Arranging is what the timeline is for, so switching to song mode brings
+      // it up. One way only: closing the window does not switch back, because
+      // the transport keys still have to know which of the two views is meant.
+      if (mode === 'song') useWindowStore.getState().openWindow('playlist')
     },
 
     /**

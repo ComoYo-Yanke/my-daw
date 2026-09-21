@@ -12,7 +12,6 @@ import { useDawStore } from '../state/useDawStore'
  */
 function SampleBrowser(): React.JSX.Element {
   const addLibrarySample = useDawStore((state) => state.addLibrarySample)
-  const toggleLibrary = useDawStore((state) => state.toggleLibrary)
 
   /** Unfolded category ids. Drums starts open — it is what a library is for. */
   const [expanded, setExpanded] = useState<string[]>(['drums'])
@@ -25,19 +24,8 @@ function SampleBrowser(): React.JSX.Element {
 
   return (
     <aside className="library" aria-label="采样库">
-      <div className="library__header">
-        <span className="library__title">采样库</span>
-        <button
-          type="button"
-          className="library__close"
-          onClick={toggleLibrary}
-          title="收起采样库"
-          aria-label="收起采样库"
-        >
-          ×
-        </button>
-      </div>
-
+      {/* No header of its own: the window frame around this holds the name and
+          the ×, and the tree is all the panel has left to show. */}
       <div className="library__tree">
         {LIBRARY.map((category) => {
           const isOpen = expanded.includes(category.id)

@@ -1,13 +1,16 @@
-import { useEffect } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import BpmField from './components/BpmField'
 import ChannelRow from './components/ChannelRow'
+import DawWindow from './components/DawWindow'
 import FileMenu from './components/FileMenu'
 import PatternBar from './components/PatternBar'
 import PianoRoll from './components/PianoRoll'
 import Playlist from './components/Playlist'
 import SampleBrowser from './components/SampleBrowser'
 import Toast from './components/Toast'
+import WindowMenu from './components/WindowMenu'
 import { selectNotes, useDawStore } from './state/useDawStore'
+import { selectWindowOpen, useWindowStore } from './state/useWindowStore'
 
 function App(): React.JSX.Element {
   const channels = useDawStore((state) => state.channels)
@@ -19,6 +22,7 @@ function App(): React.JSX.Element {
   const stopAll = useDawStore((state) => state.stopAll)
   const clearError = useDawStore((state) => state.clearError)
   const pianoRollChannelId = useDawStore((state) => state.pianoRollChannelId)
+  const closePianoRoll = useDawStore((state) => state.closePianoRoll)
   const playMode = useDawStore((state) => state.playMode)
   const playback = useDawStore((state) => state.playback)
   const playSteps = useDawStore((state) => state.playSteps)
@@ -26,8 +30,6 @@ function App(): React.JSX.Element {
   const playPianoRoll = useDawStore((state) => state.playPianoRoll)
   const stopSequence = useDawStore((state) => state.stopSequence)
   const undo = useDawStore((state) => state.undo)
-  const libraryOpen = useDawStore((state) => state.libraryOpen)
-  const toggleLibrary = useDawStore((state) => state.toggleLibrary)
   const openProject = useDawStore((state) => state.openProject)
   const saveProject = useDawStore((state) => state.saveProject)
   /** How many notes the open roll has, which is what the ▶ button goes by too. */
@@ -35,11 +37,47 @@ function App(): React.JSX.Element {
     state.pianoRollChannelId === null ? 0 : selectNotes(state, state.pianoRollChannelId).length
   )
 
+  // The library has no switch of its own any more: it is open exactly when its
+  // window is, which is one fact in one place instead of two that can disagree.
+  const libraryOpen = useWindowStore((state) => selectWindowOpen(state.windows, 'sample-browser'))
+  const toggleWindow = useWindowStore((state) => state.toggleWindow)
+  const setWorkArea = useWindowStore((state) => state.setWorkArea)
+
   // Resolved from the id rather than stored as an object, so the panel always
   // shows the channel's current notes and name.
   const pianoRollChannel = channels.find((channel) => channel.id === pianoRollChannelId)
 
   const stepsPlaying = playback?.mode === 'steps'
+
+  const workspaceRef = useRef<HTMLDivElement>(null)
+
+  /**
+   * Tell the window store where the workspace is.
+   *
+   * Docked windows are kept inside this rectangle, and it is only knowable once
+   * something has been laid out, so it is measured rather than configured: move
+   * the toolbar or open the error banner and every docked window's limits move
+   * with it.
+   *
+   * Measured in a layout effect, before the first paint, because the observer
+   * alone is too late — its callback is asynchronous and can land after the
+   * frame, which would show every window sitting at the defaults for one frame
+   * and then jumping.
+   */
+  useLayoutEffect(() => {
+    const element = workspaceRef.current
+    if (element === null) return
+
+    const measure = (): void => {
+      const rect = element.getBoundingClientRect()
+      setWorkArea({ x: rect.x, y: rect.y, width: rect.width, height: rect.height })
+    }
+
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [setWorkArea])
 
   /**
    * The project's keyboard: the transport, undo, and the two file keys.
@@ -118,12 +156,13 @@ function App(): React.JSX.Element {
       <header className="toolbar">
         <span className="toolbar__title">my-daw · Channel Rack</span>
         <FileMenu />
+        <WindowMenu />
         <BpmField />
         <button
           type="button"
           className="toolbar__button"
           aria-pressed={libraryOpen}
-          onClick={toggleLibrary}
+          onClick={() => toggleWindow('sample-browser')}
           title="打开内置采样库，点一个采样就直接建通道"
         >
           采样库
@@ -173,17 +212,18 @@ function App(): React.JSX.Element {
         </div>
       )}
 
-      {/* The library sits beside the rack rather than over it, and the piano
-          roll stays below both: what the sidebar takes is width, and the rack is
-          the thing that has width to spare. */}
-      <div className="daw__body">
-        {libraryOpen && <SampleBrowser />}
+      <PatternBar />
 
-        <div className="daw__main">
-          <PatternBar />
-
-          {playMode === 'song' && <Playlist />}
-
+      {/* The workspace: everything that is a window lives in here, and docked
+          windows are kept inside it by the store. It has no visible box of its
+          own — it is the region the windows are arranged in. */}
+      <div className="daw-workspace" ref={workspaceRef}>
+        {/* Rendered unconditionally, and each one subscribes only to its own
+            record. App deliberately does not read `windows` itself: a drag
+            replaces that array sixty times a second, and reading it here would
+            re-render this component — and rebuild the elements below with it —
+            on every frame of it. */}
+        <DawWindow id="channel-rack">
           <main className="content">
             {channels.length === 0 ? (
               <p className="empty">
@@ -203,15 +243,38 @@ function App(): React.JSX.Element {
               </div>
             )}
           </main>
-        </div>
-      </div>
+        </DawWindow>
 
-      {pianoRollChannel !== undefined && (
-        <PianoRoll
-          channel={pianoRollChannel}
-          sample={samples.find((item) => item.id === pianoRollChannel.sampleId)}
-        />
-      )}
+        <DawWindow id="playlist">
+          <Playlist />
+        </DawWindow>
+
+        <DawWindow id="sample-browser">
+          <SampleBrowser />
+        </DawWindow>
+
+        {/* Closing this one has to stop its transport and drop the channel it
+            was bound to, which is `closePianoRoll`'s job rather than the
+            window's. The roll itself needs a channel: three other actions clear
+            `pianoRollChannelId` without going through `closePianoRoll`, so the
+            window can be open with nothing in it. */}
+        <DawWindow
+          id="piano-roll"
+          title={
+            pianoRollChannel === undefined ? '钢琴卷帘' : `钢琴卷帘 · ${pianoRollChannel.name}`
+          }
+          onRequestClose={closePianoRoll}
+        >
+          {pianoRollChannel === undefined ? (
+            <p className="empty">在 Channel Rack 里双击一个通道，这里就会打开它的钢琴卷帘。</p>
+          ) : (
+            <PianoRoll
+              channel={pianoRollChannel}
+              sample={samples.find((item) => item.id === pianoRollChannel.sampleId)}
+            />
+          )}
+        </DawWindow>
+      </div>
 
       <Toast />
     </div>

@@ -163,150 +163,150 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
       >
         <span className="channel__led" data-active={isSounding} aria-hidden="true" />
 
-      <div className="channel__identity" title="双击通道其他位置打开钢琴卷帘">
-        {draft === null ? (
-          <span
-            className="channel__name"
-            title="双击重命名"
-            onDoubleClick={() => setDraft(channel.name)}
-          >
-            {channel.name}
+        <div className="channel__identity" title="双击通道其他位置打开钢琴卷帘">
+          {draft === null ? (
+            <span
+              className="channel__name"
+              title="双击重命名"
+              onDoubleClick={() => setDraft(channel.name)}
+            >
+              {channel.name}
+            </span>
+          ) : (
+            <input
+              className="channel__name-input"
+              value={draft}
+              autoFocus
+              onChange={(event) => setDraft(event.target.value)}
+              onFocus={(event) => event.currentTarget.select()}
+              onBlur={commitRename}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  commitRename()
+                } else if (event.key === 'Escape') {
+                  setDraft(null)
+                }
+              }}
+            />
+          )}
+          <span className="channel__meta">
+            {sample ? formatDuration(sample.durationSec) : '采样缺失'}
+            {notes.length > 0 ? ` · ${notes.length} 音符` : ''}
+            {activeSteps > 0 ? ` · ${activeSteps} 步进` : ''}
           </span>
-        ) : (
-          <input
-            className="channel__name-input"
-            value={draft}
-            autoFocus
-            onChange={(event) => setDraft(event.target.value)}
-            onFocus={(event) => event.currentTarget.select()}
-            onBlur={commitRename}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') {
-                commitRename()
-              } else if (event.key === 'Escape') {
-                setDraft(null)
-              }
-            }}
-          />
-        )}
-        <span className="channel__meta">
-          {sample ? formatDuration(sample.durationSec) : '采样缺失'}
-          {notes.length > 0 ? ` · ${notes.length} 音符` : ''}
-          {activeSteps > 0 ? ` · ${activeSteps} 步进` : ''}
-        </span>
-      </div>
+        </div>
 
-      {/* Sits against the waveform rather than at the row's end, so what it opens
+        {/* Sits against the waveform rather than at the row's end, so what it opens
           is next to what it points at. */}
-      <button
-        type="button"
-        className="channel__steps-toggle"
-        aria-expanded={stepsOpen}
-        onClick={() => setStepsOpen((open) => !open)}
-        title={stepsOpen ? '收起步进网格' : '展开步进网格'}
-        aria-label={stepsOpen ? '收起步进网格' : '展开步进网格'}
-      >
-        {stepsOpen ? '▾' : '▸'}
-      </button>
+        <button
+          type="button"
+          className="channel__steps-toggle"
+          aria-expanded={stepsOpen}
+          onClick={() => setStepsOpen((open) => !open)}
+          title={stepsOpen ? '收起步进网格' : '展开步进网格'}
+          aria-label={stepsOpen ? '收起步进网格' : '展开步进网格'}
+        >
+          {stepsOpen ? '▾' : '▸'}
+        </button>
 
-      <button
-        type="button"
-        className="channel__wave"
-        onClick={handlePlayClick}
-        title={
-          sample === undefined
-            ? '采样缺失'
-            : notes.length > 0
-              ? sequencePlaying
-                ? '停止播放音符序列'
-                : `播放 ${notes.length} 个音符的序列`
-              : `试听 ${sample.name}`
-        }
-      >
-        {sample ? (
-          <WaveformThumbnail peaks={sample.peaks} isPlaying={isSounding} />
-        ) : (
-          <span className="channel__missing">—</span>
+        <button
+          type="button"
+          className="channel__wave"
+          onClick={handlePlayClick}
+          title={
+            sample === undefined
+              ? '采样缺失'
+              : notes.length > 0
+                ? sequencePlaying
+                  ? '停止播放音符序列'
+                  : `播放 ${notes.length} 个音符的序列`
+                : `试听 ${sample.name}`
+          }
+        >
+          {sample ? (
+            <WaveformThumbnail peaks={sample.peaks} isPlaying={isSounding} />
+          ) : (
+            <span className="channel__missing">—</span>
+          )}
+        </button>
+
+        <Knob
+          label="音量"
+          value={channel.volume}
+          min={0}
+          max={1}
+          defaultValue={DEFAULT_VOLUME}
+          format={formatVolume}
+          onChange={(value) => setVolume(channel.id, value)}
+        />
+        <Knob
+          label="声像"
+          value={channel.pan}
+          min={-1}
+          max={1}
+          defaultValue={DEFAULT_PAN}
+          format={formatPan}
+          bipolar
+          onChange={(value) => setPan(channel.id, value)}
+        />
+
+        <button
+          type="button"
+          className="channel__toggle channel__toggle--mute"
+          aria-pressed={channel.muted}
+          onClick={() => toggleMute(channel.id)}
+          title="静音"
+        >
+          M
+        </button>
+        <button
+          type="button"
+          className="channel__toggle channel__toggle--solo"
+          aria-pressed={channel.soloed}
+          onClick={() => toggleSolo(channel.id)}
+          title="独奏"
+        >
+          S
+        </button>
+
+        <button
+          type="button"
+          className="channel__clone"
+          onClick={() => duplicateChannel(channel.id)}
+          title="复制通道"
+          aria-label="复制通道"
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+            <rect x="0.5" y="0.5" width="7" height="7" rx="1" fill="none" stroke="currentColor" />
+            <rect x="4.5" y="4.5" width="7" height="7" rx="1" fill="none" stroke="currentColor" />
+          </svg>
+        </button>
+
+        {stepsOpen && (
+          <>
+            <Knob
+              label="Swing"
+              value={channel.swing}
+              min={0}
+              max={100}
+              defaultValue={0}
+              format={formatSwing}
+              onChange={(value) => setSwing(channel.id, value)}
+            />
+            <ChannelSteps
+              channelId={channel.id}
+              steps={steps}
+              stepCount={channel.stepCount}
+              color={channel.color}
+              currentStep={currentStep}
+            />
+          </>
         )}
-      </button>
 
-      <Knob
-        label="音量"
-        value={channel.volume}
-        min={0}
-        max={1}
-        defaultValue={DEFAULT_VOLUME}
-        format={formatVolume}
-        onChange={(value) => setVolume(channel.id, value)}
-      />
-      <Knob
-        label="声像"
-        value={channel.pan}
-        min={-1}
-        max={1}
-        defaultValue={DEFAULT_PAN}
-        format={formatPan}
-        bipolar
-        onChange={(value) => setPan(channel.id, value)}
-      />
-
-      <button
-        type="button"
-        className="channel__toggle channel__toggle--mute"
-        aria-pressed={channel.muted}
-        onClick={() => toggleMute(channel.id)}
-        title="静音"
-      >
-        M
-      </button>
-      <button
-        type="button"
-        className="channel__toggle channel__toggle--solo"
-        aria-pressed={channel.soloed}
-        onClick={() => toggleSolo(channel.id)}
-        title="独奏"
-      >
-        S
-      </button>
-
-      <button
-        type="button"
-        className="channel__clone"
-        onClick={() => duplicateChannel(channel.id)}
-        title="复制通道"
-        aria-label="复制通道"
-      >
-        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-          <rect x="0.5" y="0.5" width="7" height="7" rx="1" fill="none" stroke="currentColor" />
-          <rect x="4.5" y="4.5" width="7" height="7" rx="1" fill="none" stroke="currentColor" />
-        </svg>
-      </button>
-
-      {stepsOpen && (
-        <>
-          <Knob
-            label="Swing"
-            value={channel.swing}
-            min={0}
-            max={100}
-            defaultValue={0}
-            format={formatSwing}
-            onChange={(value) => setSwing(channel.id, value)}
-          />
-          <ChannelSteps
-            channelId={channel.id}
-            steps={steps}
-            stepCount={channel.stepCount}
-            color={channel.color}
-            currentStep={currentStep}
-          />
-        </>
-      )}
-
-      <StepCountSwitch
-        value={channel.stepCount}
-        onChange={(stepCount: StepCount) => setStepCount(channel.id, stepCount)}
-      />
+        <StepCountSwitch
+          value={channel.stepCount}
+          onChange={(stepCount: StepCount) => setStepCount(channel.id, stepCount)}
+        />
       </div>
 
       {/* Outside the row, so a right-click inside the menu does not bubble back

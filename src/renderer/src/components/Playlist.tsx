@@ -118,8 +118,14 @@ function Playlist(): React.JSX.Element {
     (clientY: number): string | undefined => {
       const grid = gridRef.current
       if (grid === null) return undefined
+      // `clientTop` is the grid's own border: the ruler starts after it, not at
+      // the box's outer edge.
       const offsetY =
-        clientY - grid.getBoundingClientRect().top - RULER_HEIGHT_PX + grid.scrollTop
+        clientY -
+        grid.getBoundingClientRect().top -
+        grid.clientTop -
+        RULER_HEIGHT_PX +
+        grid.scrollTop
       const index = Math.floor(offsetY / TRACK_HEIGHT_PX)
       return tracks[Math.min(Math.max(0, index), tracks.length - 1)]?.id
     },
@@ -184,6 +190,10 @@ function Playlist(): React.JSX.Element {
     if (event.button !== 0) return
     // Keeps the lane from treating this as a click on empty space.
     event.stopPropagation()
+    // Taken by the clip, so a drag that leaves the window still ends when the
+    // button comes up outside it: without this the release would be missed, and
+    // the next move over the lane would carry the drag on.
+    event.currentTarget.setPointerCapture(event.pointerId)
     selectClip(drag.clipId)
     dragRef.current = drag
     setDraggingClipId(drag.clipId)
@@ -220,6 +230,8 @@ function Playlist(): React.JSX.Element {
 
   const gridStyle = {
     '--pl-bar-w': `${BAR_WIDTH_PX}px`,
+    '--pl-beat-w': `${BAR_WIDTH_PX / BEATS_PER_BAR}px`,
+    '--pl-group-w': `${BAR_WIDTH_PX * BEATS_PER_BAR}px`,
     '--pl-head-w': `${HEAD_WIDTH_PX}px`,
     '--pl-ruler-h': `${RULER_HEIGHT_PX}px`,
     '--pl-track-h': `${TRACK_HEIGHT_PX}px`,
@@ -231,8 +243,8 @@ function Playlist(): React.JSX.Element {
 
   return (
     <section className="playlist" aria-label="播放列表">
+      {/* No title of its own: the window frame above this one has it. */}
       <header className="pl__header">
-        <span className="pl__title">Playlist</span>
         <button
           type="button"
           className="pl__play"

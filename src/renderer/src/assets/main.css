@@ -26,23 +26,213 @@ body {
   height: 100%;
 }
 
-/* Everything between the toolbar and the piano roll. A row, so the sample
-   library can sit beside the rack; `.daw__main` puts the column back for what
-   is left. Both need an explicit share of the height — the flex default would
-   let them collapse to their content and clip the rack's scrolling. */
-.daw__body {
-  display: flex;
+/* The workspace: the region the windows are arranged in.
+   It has no border and nothing in flow inside it — every window is positioned
+   against the viewport, so this element's only jobs are to take the height the
+   toolbar and the pattern bar leave, and to be the rectangle the store measures
+   to keep docked windows inside. `overflow: hidden` cannot clip them (a fixed
+   element is not clipped by an ancestor's overflow); it is here so that nothing
+   that does end up in flow can push the layout around. */
+.daw-workspace {
+  position: relative;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
-.daw__main {
+/* Windows
+
+   One box for both modes. Docked and floating differ in how they are drawn and
+   in what they are kept inside, and both of those are decided elsewhere — the
+   position, size and z-index all arrive inline from the window store. */
+
+.daw-window {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* The frame is one pixel on every side, and the clamps are worked out in outer
+     pixels: without this the border would be outside the width the store
+     thinks the window is. */
+  box-sizing: border-box;
+  border: 1px solid var(--daw-border);
+  background: var(--daw-panel);
+}
+
+.daw-window[data-mode='floating'] {
+  border-radius: 8px;
+  border-color: var(--ev-c-gray-2);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+}
+
+.daw-window__bar {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 6px;
+  /* `TITLEBAR_HEIGHT_PX` in the window store is this plus the frame's two
+     pixels: it is the height a minimized window is set to. */
+  box-sizing: border-box;
+  height: 26px;
+  padding: 0 4px 0 10px;
+  border-bottom: 1px solid var(--daw-border);
+  background: var(--ev-c-gray-3);
+  cursor: move;
+}
+
+.daw-window[data-mode='floating'] .daw-window__bar {
+  border-radius: 7px 7px 0 0;
+}
+
+/* A minimized window is its title bar, and the bar fills it. */
+.daw-window[data-minimized='true'] .daw-window__bar {
+  height: 100%;
+  border-bottom: none;
+  border-radius: 7px;
+}
+
+.daw-window__title {
+  flex: 1;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.daw-window__button {
+  padding: 0 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ev-c-text-3);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.daw-window__button:hover {
+  background: var(--ev-c-gray-2);
+  color: var(--ev-c-text-1);
+}
+
+/* Pinned. The glyph is the whole signal, so it gets the accent colour. */
+.daw-window__button[aria-pressed='true'] {
+  background: var(--daw-accent-soft);
+}
+
+.daw-window__button--mode {
+  font-weight: 600;
+}
+
+.daw-window__button--close:hover {
+  background: var(--daw-mute);
+  color: var(--ev-c-text-1);
+}
+
+/* The body never scrolls: whatever is inside it owns its own scroller. That is
+   what lets a panel be dropped into a window without being told how tall it is. */
+.daw-window__body {
   display: flex;
   flex-direction: column;
   flex: 1;
-  /* Without this a wide channel row would push the library off the window
-     instead of scrolling inside `.content`. */
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
+}
+
+/* The window's edges. They lie over the content, which is what keeps a grab at
+   the very edge from landing on whatever is behind it.
+   Narrow, because anything a panel puts against its own edge — a scrollbar, most
+   of all — is under them. */
+.daw-window__resize {
+  position: absolute;
+  touch-action: none;
+}
+
+.daw-window__resize:hover {
+  background: var(--daw-accent-soft);
+}
+
+.daw-window__resize[data-edge='n'] {
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.daw-window__resize[data-edge='s'] {
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  cursor: ns-resize;
+}
+
+.daw-window__resize[data-edge='w'] {
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+.daw-window__resize[data-edge='e'] {
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 4px;
+  cursor: ew-resize;
+}
+
+/* The corners sit over the edges they share, and get the corner cursors. */
+.daw-window__resize[data-edge='nw'],
+.daw-window__resize[data-edge='ne'],
+.daw-window__resize[data-edge='sw'],
+.daw-window__resize[data-edge='se'] {
+  width: 10px;
+  height: 10px;
+}
+
+.daw-window__resize[data-edge='nw'] {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+}
+
+.daw-window__resize[data-edge='ne'] {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+}
+
+.daw-window__resize[data-edge='sw'] {
+  bottom: 0;
+  left: 0;
+  cursor: nesw-resize;
+}
+
+.daw-window__resize[data-edge='se'] {
+  bottom: 0;
+  right: 0;
+  cursor: nwse-resize;
+}
+
+/* The south-east corner gets a grip, since it is the one everyone reaches for. */
+.daw-window__resize[data-edge='se']::after {
+  content: '';
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 5px;
+  height: 5px;
+  border-right: 2px solid var(--ev-c-text-3);
+  border-bottom: 2px solid var(--ev-c-text-3);
+  opacity: 0.6;
 }
 
 /* Toolbar */
@@ -176,6 +366,22 @@ body {
   font-size: 11px;
   line-height: 28px;
   color: var(--ev-c-text-3);
+}
+
+/* The tick in the 窗口 menu. Sits where a shortcut would, so the rows line up
+   with each other whether or not they are open. */
+.file-menu__check {
+  min-width: 12px;
+  font-size: 12px;
+  line-height: 28px;
+  color: var(--daw-accent);
+}
+
+/* The rule above a group that is not a list of the same thing. */
+.file-menu__item--split {
+  margin-top: 4px;
+  border-top: 1px solid var(--daw-border);
+  border-radius: 0 0 4px 4px;
 }
 
 /* Tempo. Feeds every derived time in the project, so it sits with the transport
@@ -335,6 +541,16 @@ body {
   color: var(--ev-c-text-1);
 }
 
+/* How many clips on the timeline place this pattern. It is what the delete
+   prompt counts, so it is worth seeing before the prompt appears. Left on the
+   button's own colour, which flips when the tab is the current one. */
+.pattern__used {
+  margin-left: 5px;
+  font-size: 8px;
+  opacity: 0.65;
+  vertical-align: middle;
+}
+
 .pattern[aria-pressed='true'] {
   border-color: transparent;
   background: var(--daw-accent);
@@ -379,52 +595,20 @@ body {
 
 /* Sample library */
 
-/* A fixed width rather than a share of the window: the names in it are short and
-   known, and a sidebar that breathed with the window would take width away from
-   the step grids, which are the thing that actually needs it. */
+/* Fills its window rather than taking a fixed width: the panel is a window now,
+   and how wide it is is the window frame's business. */
 .library {
   display: flex;
   flex-direction: column;
-  flex-shrink: 0;
-  width: 190px;
-  border-right: 1px solid var(--daw-border);
-  background: var(--daw-panel);
-}
-
-.library__header {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  gap: 8px;
-  padding: 8px 8px 8px 16px;
-  border-bottom: 1px solid var(--daw-border);
-}
-
-.library__title {
   flex: 1;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.library__close {
-  padding: 0 6px;
-  border: none;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ev-c-text-3);
-  font-family: inherit;
-  font-size: 15px;
-  line-height: 20px;
-  cursor: pointer;
-}
-
-.library__close:hover {
-  background: var(--ev-c-gray-3);
-  color: var(--ev-c-text-1);
+  min-width: 0;
+  min-height: 0;
+  background: var(--daw-panel);
 }
 
 .library__tree {
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 8px 0;
 }
@@ -498,6 +682,11 @@ body {
      scrolls sideways rather than squeezing the grid down. */
   overflow: auto;
   padding: 16px;
+  /* A scroll container draws its scrollbars against its own edge, and this one's
+     edge is the window's: the horizontal bar would land under the frame's south
+     resize handle, which is the whole width of the window and would swallow the
+     drag. A margin lifts the box, and so the bar, clear of it. */
+  margin-bottom: 5px;
 }
 
 .empty {
@@ -821,8 +1010,10 @@ body {
 .playlist {
   display: flex;
   flex-direction: column;
-  flex-shrink: 0;
-  border-top: 1px solid var(--daw-border);
+  flex: 1;
+  /* The grid scrolls inside the panel rather than widening it. */
+  min-width: 0;
+  min-height: 0;
   background: var(--daw-panel);
 }
 
@@ -830,14 +1021,10 @@ body {
   display: flex;
   align-items: center;
   flex-shrink: 0;
+  flex-wrap: wrap;
   gap: 12px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--daw-border);
-}
-
-.pl__title {
-  font-size: 13px;
-  font-weight: 700;
 }
 
 .pl__play {
@@ -862,6 +1049,30 @@ body {
   background: var(--daw-led);
 }
 
+.pl__add {
+  padding: 0 10px;
+  border: 1px solid var(--daw-border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ev-c-text-1);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 24px;
+  cursor: pointer;
+}
+
+.pl__add:hover {
+  border-color: var(--daw-accent);
+  color: var(--daw-accent);
+}
+
+.pl__counts {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--ev-c-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
 .pl__position {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
@@ -874,26 +1085,42 @@ body {
   color: var(--ev-c-text-3);
 }
 
-.pl__body {
-  display: flex;
-  flex-direction: column;
-  padding: 0 16px 12px;
+/* The scroll container. The timeline is as long as it is, in fixed-width bars,
+   so a long one scrolls sideways instead of squeezing; the track headers and the
+   ruler are pinned to its edges so they stay put through both scrolls. */
+.pl__grid {
+  position: relative;
+  /* The panel's window decides how tall this is; the grid just takes what it is
+     given and scrolls. */
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0 16px 12px;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: #191920;
 }
 
 .pl__ruler {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   display: flex;
-  flex-shrink: 0;
-  height: 18px;
-  /* Matches the lane's 1px border, so bar lines up with the ruler's ticks. */
-  margin: 0 1px;
+  box-sizing: border-box;
+  /* Offset by the header column so bar 1 starts where the lanes do. */
+  width: calc(var(--pl-head-w) + var(--pl-lane-w));
+  height: var(--pl-ruler-h);
+  padding-left: var(--pl-head-w);
+  background: var(--daw-panel);
 }
 
 .pl__ruler-bar {
-  flex: 1;
+  flex: 0 0 var(--pl-bar-w);
+  box-sizing: border-box;
   padding-left: 3px;
   border-left: 1px solid #26262f;
   font-size: 10px;
-  line-height: 18px;
+  line-height: var(--pl-ruler-h);
   color: var(--ev-c-text-3);
   font-variant-numeric: tabular-nums;
 }
@@ -902,12 +1129,99 @@ body {
   border-left-color: var(--daw-border);
 }
 
+.pl-track {
+  display: flex;
+  box-sizing: border-box;
+  height: var(--pl-track-h);
+  border-bottom: 1px solid var(--daw-border);
+}
+
+.pl-track__head {
+  position: sticky;
+  left: 0;
+  /* Above the ruler, so the corner belongs to the header column. */
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  flex: 0 0 var(--pl-head-w);
+  box-sizing: border-box;
+  gap: 4px;
+  padding: 0 6px;
+  border-right: 1px solid var(--daw-border);
+  background: var(--daw-row);
+}
+
+.pl-track[data-muted='true'] .pl-track__head {
+  opacity: 0.6;
+}
+
+.pl-track__name {
+  overflow: hidden;
+  flex: 1;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.pl-track__toggle {
+  flex-shrink: 0;
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--daw-border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ev-c-text-2);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pl-track__toggle:hover {
+  border-color: var(--ev-c-text-2);
+}
+
+.pl-track__toggle--mute[aria-pressed='true'] {
+  border-color: var(--daw-mute);
+  background: var(--daw-mute);
+  color: #101014;
+}
+
+.pl-track__toggle--solo[aria-pressed='true'] {
+  border-color: var(--daw-solo);
+  background: var(--daw-solo);
+  color: #101014;
+}
+
+.pl-track__remove {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ev-c-text-3);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pl-track__remove:hover {
+  background: rgba(224, 90, 90, 0.18);
+  color: #ff8a8a;
+}
+
 .pl-lane {
   position: relative;
-  flex-shrink: 0;
-  height: 64px;
-  border: 1px solid var(--daw-border);
-  border-radius: 4px;
+  flex: 0 0 var(--pl-lane-w);
+  box-sizing: border-box;
+  /* Bar lines, beat lines, and a heavier one every bar of the four-bar group. */
   background-color: #191920;
   background-image:
     repeating-linear-gradient(to right, #3a3a48 0 1px, transparent 1px var(--pl-group-w)),
@@ -921,8 +1235,8 @@ body {
 
 .pl-clip {
   position: absolute;
-  top: 4px;
-  bottom: 4px;
+  top: 3px;
+  bottom: 3px;
   display: flex;
   align-items: center;
   box-sizing: border-box;
@@ -957,18 +1271,28 @@ body {
 .pl-clip__handle {
   position: absolute;
   top: 0;
-  right: 0;
   bottom: 0;
   width: 6px;
   background: rgba(15, 18, 36, 0.35);
   cursor: ew-resize;
 }
 
+.pl-clip__handle--left {
+  left: 0;
+}
+
+.pl-clip__handle--right {
+  right: 0;
+}
+
+/* One line for the whole stack rather than one per lane: it is the same moment
+   on every track. Below the headers, which are pinned and must stay readable. */
 .pl-playhead {
   position: absolute;
-  top: 0;
-  bottom: 0;
+  top: var(--pl-ruler-h);
+  z-index: 1;
   width: 2px;
+  height: var(--pl-tracks-h);
   margin-left: -1px;
   background: var(--daw-led);
   box-shadow: 0 0 6px var(--daw-led);
@@ -977,22 +1301,21 @@ body {
 
 /* Piano Roll */
 
-/* A definite height rather than a content one.
-   The keyboard is 25 keys tall and the grid has to show all of them, so the panel
-   asks for a share of the window and scrolls its own grid inside that. Sized by
-   content it would either be a slit you scroll or tall enough to push the rack off
-   the screen; sized in vh it is the same panel at every window height, and the
-   min-height keeps it usable when the window is short. */
-/* Tall enough that the transport, which now wraps to two rows on a narrow window,
-   still leaves the grid a usable height: the panel has a fixed height and the grid
-   takes what is left, so a second toolbar row comes straight out of the notes. */
+/* The panel is sized by its own drag handles rather than by the stylesheet: the
+   height arrives as an inline style, and so does the width once an edge has been
+   dragged. What is left here is the floor and the anchoring.
+   Pinned to the right, because it is resized from its left edge: a panel hanging
+   off the side it is dragged away from keeps that edge still. */
+/* Fills its window. How big the panel is — and how small it may get — is the
+   window's business now, so there is no width, no minimum and no border here;
+   the only thing left is the two absolutely positioned children inside
+   `.pr__canvas`, which anchor to `.pr-grid` rather than to this. */
 .piano-roll {
   display: flex;
   flex-direction: column;
-  flex-shrink: 0;
-  height: 66vh;
-  min-height: 360px;
-  border-top: 1px solid var(--daw-border);
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
   background: var(--daw-panel);
 }
 
@@ -1004,11 +1327,6 @@ body {
   gap: 12px;
   padding: 8px 16px;
   border-bottom: 1px solid var(--daw-border);
-}
-
-.pr__title {
-  font-size: 13px;
-  font-weight: 700;
 }
 
 .pr__pattern {
@@ -1023,26 +1341,6 @@ body {
 .pr__meta {
   font-size: 12px;
   color: var(--ev-c-text-3);
-}
-
-.pr__close {
-  width: 24px;
-  height: 24px;
-  margin-left: auto;
-  padding: 0;
-  border: 1px solid var(--daw-border);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ev-c-text-2);
-  font-family: inherit;
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.pr__close:hover {
-  background: var(--ev-c-gray-3);
-  color: var(--ev-c-text-1);
 }
 
 /* Transport */
@@ -1437,4 +1735,112 @@ body {
   bottom: 0;
   left: -5px;
   right: -5px;
+}
+
+/* Context menu */
+
+.ctx-menu {
+  position: fixed;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  min-width: 132px;
+  padding: 4px;
+  border: 1px solid var(--daw-border);
+  border-radius: 6px;
+  background: var(--daw-panel);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+
+.ctx-menu__item {
+  padding: 6px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ev-c-text-1);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ctx-menu__item:hover:not(:disabled) {
+  background: var(--daw-accent-soft);
+  color: var(--daw-accent);
+}
+
+.ctx-menu__item:disabled {
+  color: var(--ev-c-text-3);
+  cursor: default;
+}
+
+.ctx-menu__item[data-danger='true']:hover:not(:disabled) {
+  background: rgba(224, 90, 90, 0.18);
+  color: #ff8a8a;
+}
+
+/* Confirmation */
+
+.confirm {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 8, 12, 0.55);
+}
+
+.confirm__box {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 420px;
+  padding: 18px;
+  border: 1px solid var(--daw-border);
+  border-radius: 8px;
+  background: var(--daw-panel);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.55);
+}
+
+.confirm__text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.confirm__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.confirm__button {
+  padding: 0 14px;
+  border: 1px solid var(--daw-border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ev-c-text-1);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 26px;
+  cursor: pointer;
+}
+
+.confirm__button:hover {
+  border-color: var(--daw-accent);
+  color: var(--daw-accent);
+}
+
+.confirm__button--danger {
+  border-color: transparent;
+  background: #d9534f;
+  color: #ffffff;
+  font-weight: 700;
+}
+
+.confirm__button--danger:hover {
+  border-color: transparent;
+  background: #e4635f;
+  color: #ffffff;
 }

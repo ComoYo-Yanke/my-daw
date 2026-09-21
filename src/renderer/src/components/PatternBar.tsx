@@ -79,7 +79,8 @@ function PatternBar(): React.JSX.Element {
   // Resolved from the id rather than held in the menu: a pattern can go away
   // while its menu is open, and a menu for something that is gone has nothing
   // to act on.
-  const menuPattern = menu === null ? undefined : patterns.find((item) => item.id === menu.patternId)
+  const menuPattern =
+    menu === null ? undefined : patterns.find((item) => item.id === menu.patternId)
 
   return (
     <div className="pattern-bar">

@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 /** One row of the menu. */
 export type ContextMenuItem = {
@@ -72,7 +73,15 @@ function ContextMenu({ x, y, items, onClose }: ContextMenuProps): React.JSX.Elem
     }
   }, [onClose])
 
-  return (
+  // Portalled to the body rather than drawn where it was opened.
+  //
+  // A menu is opened from a window, and a window is a positioned box with a
+  // z-index of its own — which makes it a stacking context. Left inside one, the
+  // menu's own z-index would only order it against that window's contents, and
+  // any window stacked above would cover it: pin the sample library and the rack
+  // rows' right-click menu disappears behind it. Dismissal is unaffected, since
+  // it asks whether the menu's own element contains the press.
+  return createPortal(
     <div
       className="ctx-menu"
       role="menu"
@@ -97,7 +106,8 @@ function ContextMenu({ x, y, items, onClose }: ContextMenuProps): React.JSX.Elem
           {item.label}
         </button>
       ))}
-    </div>
+    </div>,
+    document.body
   )
 }
 
