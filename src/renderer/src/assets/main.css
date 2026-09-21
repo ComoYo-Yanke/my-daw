@@ -2,9 +2,13 @@
 
 :root {
   --daw-panel: var(--ev-c-black-soft);
+  --daw-row: #232329;
   --daw-border: var(--ev-c-gray-3);
   --daw-accent: #6c8cff;
   --daw-accent-soft: rgba(108, 140, 255, 0.16);
+  --daw-mute: #e0a33c;
+  --daw-solo: #48b57a;
+  --daw-led: #58e08a;
 }
 
 body {
@@ -79,6 +83,48 @@ body {
   background: #87a1ff;
 }
 
+/* The step loop's transport. Lit while the loop is running, like the other
+   play buttons in the project. */
+.toolbar__button--play[aria-pressed='true'] {
+  border-color: transparent;
+  background: var(--daw-led);
+  color: #0f1224;
+}
+
+/* Tempo. Feeds every derived time in the project, so it sits with the transport
+   rather than inside any one editor. */
+.bpm {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 6px;
+}
+
+.bpm__label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--ev-c-text-3);
+}
+
+.bpm__input {
+  width: 62px;
+  padding: 0 6px;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: #14141a;
+  color: var(--ev-c-text-1);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 24px;
+  font-variant-numeric: tabular-nums;
+}
+
+.bpm__input:focus {
+  border-color: var(--daw-accent);
+  outline: none;
+}
+
 /* Error banner */
 
 .banner {
@@ -109,11 +155,126 @@ body {
   cursor: pointer;
 }
 
-/* Sample list */
+/* Pattern switcher */
+
+.pattern-bar {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 6px;
+  padding: 8px 16px;
+  background: var(--daw-panel);
+  border-bottom: 1px solid var(--daw-border);
+  overflow-x: auto;
+}
+
+.pattern-bar__label {
+  flex-shrink: 0;
+  margin-right: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ev-c-text-3);
+}
+
+/* Pattern / Song switch */
+
+.mode-switch {
+  display: flex;
+  flex-shrink: 0;
+  padding: 2px;
+  border: 1px solid var(--daw-border);
+  border-radius: 999px;
+}
+
+.mode-switch__option {
+  padding: 0 12px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ev-c-text-3);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.mode-switch__option:hover {
+  color: var(--ev-c-text-1);
+}
+
+.mode-switch__option[aria-pressed='true'] {
+  background: var(--daw-accent);
+  color: #0f1224;
+}
+
+.pattern {
+  flex-shrink: 0;
+  padding: 0 12px;
+  border: 1px solid var(--daw-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ev-c-text-2);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 24px;
+  cursor: pointer;
+}
+
+.pattern:hover {
+  background: var(--ev-c-gray-3);
+  color: var(--ev-c-text-1);
+}
+
+.pattern[aria-pressed='true'] {
+  border-color: transparent;
+  background: var(--daw-accent);
+  color: #0f1224;
+  font-weight: 700;
+}
+
+.pattern__input {
+  flex-shrink: 0;
+  width: 110px;
+  padding: 0 10px;
+  border: 1px solid var(--daw-accent);
+  border-radius: 999px;
+  background: #14141a;
+  color: var(--ev-c-text-1);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 24px;
+}
+
+.pattern__input:focus {
+  outline: none;
+}
+
+.pattern-bar__add {
+  flex-shrink: 0;
+  padding: 0 12px;
+  border: 1px dashed var(--daw-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ev-c-text-3);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 24px;
+  cursor: pointer;
+}
+
+.pattern-bar__add:hover {
+  border-color: var(--daw-accent);
+  color: var(--daw-accent);
+}
+
+/* Rack */
 
 .content {
   flex: 1;
-  overflow-y: auto;
+  /* Both axes: a channel on 32 steps is wider than any window, and the rack
+     scrolls sideways rather than squeezing the grid down. */
+  overflow: auto;
   padding: 16px;
 }
 
@@ -124,57 +285,934 @@ body {
   color: var(--ev-c-text-3);
 }
 
-.sample-list {
+.rack {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-width: 720px;
+  /* No maximum: the rows are as wide as their step grids need, and `.content`
+     scrolls. `min-content` keeps a narrow window from squashing them instead. */
+  min-width: min-content;
 }
 
-.sample__button {
+.channel {
   display: flex;
   align-items: center;
-  width: 100%;
-  gap: 12px;
-  padding: 0 12px;
+  gap: 10px;
+  padding: 6px 10px;
   border: 1px solid transparent;
   border-radius: 6px;
-  background: var(--daw-panel);
-  color: var(--ev-c-text-1);
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 34px;
-  text-align: left;
-  cursor: pointer;
+  background: var(--daw-row);
+  /* A row never wraps its controls onto a second line — the grid is a single
+     bar and has to stay readable as one. */
+  min-width: min-content;
 }
 
-.sample__button:hover {
+.channel:hover {
   border-color: var(--daw-border);
 }
 
-.sample__button--playing {
-  border-color: var(--daw-accent);
-  background: var(--daw-accent-soft);
-}
+/* Playing indicator */
 
-.sample__icon {
+.channel__led {
   flex-shrink: 0;
-  width: 14px;
-  color: var(--daw-accent);
-  font-size: 10px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #3a3a44;
 }
 
-.sample__name {
-  flex: 1;
+.channel__led[data-active='true'] {
+  background: var(--daw-led);
+  box-shadow: 0 0 6px var(--daw-led);
+}
+
+/* Name (double-click to rename) */
+
+.channel__identity {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 132px;
   overflow: hidden;
+}
+
+.channel__name {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
   white-space: nowrap;
   text-overflow: ellipsis;
+  cursor: text;
 }
 
-.sample__duration {
+.channel__meta {
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ev-c-text-3);
+}
+
+.channel__name-input {
+  width: 100%;
+  padding: 0 4px;
+  border: 1px solid var(--daw-accent);
+  border-radius: 3px;
+  background: #14141a;
+  color: var(--ev-c-text-1);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.channel__name-input:focus {
+  outline: none;
+}
+
+/* Waveform = the play target */
+
+.channel__wave {
+  flex: 1;
+  /* 120px rather than 0: this is what stops the row shrinking past the point
+     where the grid still fits, and hands the overflow to `.content` instead. */
+  min-width: 120px;
+  height: 34px;
+  padding: 2px 6px;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: #191920;
+  cursor: pointer;
+}
+
+.channel__wave:hover {
+  border-color: var(--daw-accent);
+}
+
+.channel__missing {
+  font-size: 12px;
+  color: var(--ev-c-text-3);
+}
+
+.waveform {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Knobs */
+
+.knob {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   flex-shrink: 0;
+  width: 44px;
+}
+
+.knob__dial {
+  cursor: ns-resize;
+  touch-action: none;
+  border-radius: 50%;
+}
+
+.knob__dial:focus-visible {
+  outline: 1px solid var(--daw-accent);
+  outline-offset: 1px;
+}
+
+.knob__track {
+  fill: none;
+  stroke: #3a3a44;
+  stroke-width: 3;
+}
+
+.knob__value {
+  fill: none;
+  stroke: var(--daw-accent);
+  stroke-width: 3;
+}
+
+.knob__pointer {
+  stroke: var(--ev-c-text-1);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.knob__readout {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--ev-c-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Mute / solo / duplicate */
+
+.channel__toggle {
+  flex-shrink: 0;
+  width: 22px;
+  padding: 0;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: var(--ev-c-gray-3);
   color: var(--ev-c-text-2);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.channel__toggle:hover {
+  background: var(--ev-c-gray-2);
+}
+
+.channel__toggle[aria-pressed='true'] {
+  border-color: transparent;
+  color: #16161c;
+}
+
+.channel__toggle--mute[aria-pressed='true'] {
+  background: var(--daw-mute);
+}
+
+.channel__toggle--solo[aria-pressed='true'] {
+  background: var(--daw-solo);
+}
+
+.channel__clone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ev-c-text-2);
+  cursor: pointer;
+}
+
+.channel__clone:hover {
+  background: var(--ev-c-gray-3);
+  color: var(--ev-c-text-1);
+}
+
+/* Step sequencer */
+
+.channel__steps-toggle {
+  flex-shrink: 0;
+  width: 18px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ev-c-text-2);
+  font-family: inherit;
+  font-size: 9px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.channel__steps-toggle:hover {
+  background: var(--ev-c-gray-3);
+  color: var(--ev-c-text-1);
+}
+
+.steps {
+  display: flex;
+  flex-shrink: 0;
+  gap: 1px;
+}
+
+.step {
+  /* Square, and sized so a 32-step channel is about 830px of grid. */
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid #16161c;
+  border-radius: 2px;
+  background: #2a2a2a;
+  cursor: pointer;
+}
+
+/* Every fourth cell opens a beat, so the bar reads in groups of four without
+   hard-coding the number twice — the grouping comes from STEPS_PER_BEAT. The
+   extra 4px is what makes the downbeat visible at a glance. */
+.step[data-beat='true']:not(:first-child) {
+  margin-left: 4px;
+}
+
+.step:hover {
+  border-color: var(--daw-accent);
+}
+
+/* On: this step fires the sample, in the channel's own colour. */
+.step[aria-pressed='true'] {
+  border-color: color-mix(in srgb, var(--step-color) 45%, white);
+  background: var(--step-color);
+}
+
+/* The step the loop is on, over an on step or an off one — the border is drawn
+   inside the cell (border-box), so the cursor never shifts the grid. */
+.step[data-current='true'] {
+  border: 2px solid #fff;
+}
+
+/* Step count: how much of the grid this channel loops over. */
+
+.step-count {
+  display: flex;
+  flex-shrink: 0;
+  gap: 2px;
+}
+
+.step-count__option {
+  min-width: 24px;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--daw-border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--ev-c-text-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.step-count__option:hover {
+  color: var(--ev-c-text-1);
+}
+
+.step-count__option[aria-pressed='true'] {
+  border-color: var(--daw-accent);
+  background: var(--daw-accent);
+  color: #101014;
+}
+
+/* Playlist */
+
+.playlist {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  border-top: 1px solid var(--daw-border);
+  background: var(--daw-panel);
+}
+
+.pl__header {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--daw-border);
+}
+
+.pl__title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pl__play {
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: var(--daw-accent);
+  color: #0f1224;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 26px;
+  cursor: pointer;
+}
+
+.pl__play:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pl__play[aria-pressed='true'] {
+  background: var(--daw-led);
+}
+
+.pl__position {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
+}
+
+.pl__hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ev-c-text-3);
+}
+
+.pl__body {
+  display: flex;
+  flex-direction: column;
+  padding: 0 16px 12px;
+}
+
+.pl__ruler {
+  display: flex;
+  flex-shrink: 0;
+  height: 18px;
+  /* Matches the lane's 1px border, so bar lines up with the ruler's ticks. */
+  margin: 0 1px;
+}
+
+.pl__ruler-bar {
+  flex: 1;
+  padding-left: 3px;
+  border-left: 1px solid #26262f;
+  font-size: 10px;
+  line-height: 18px;
+  color: var(--ev-c-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.pl__ruler-bar[data-group='true'] {
+  border-left-color: var(--daw-border);
+}
+
+.pl-lane {
+  position: relative;
+  flex-shrink: 0;
+  height: 64px;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background-color: #191920;
+  background-image:
+    repeating-linear-gradient(to right, #3a3a48 0 1px, transparent 1px var(--pl-group-w)),
+    repeating-linear-gradient(to right, #303039 0 1px, transparent 1px var(--pl-bar-w)),
+    repeating-linear-gradient(to right, #26262f 0 1px, transparent 1px var(--pl-beat-w));
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* Clips */
+
+.pl-clip {
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 0 8px;
+  border: 1px solid rgba(15, 18, 36, 0.75);
+  border-radius: 3px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.pl-clip[data-selected='true'] {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 1px #ffffff;
+}
+
+.pl-clip[data-dragging='true'] {
+  cursor: grabbing;
+  opacity: 0.85;
+}
+
+.pl-clip__label {
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 700;
+  color: #0f1224;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.pl-clip__handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  background: rgba(15, 18, 36, 0.35);
+  cursor: ew-resize;
+}
+
+.pl-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--daw-led);
+  box-shadow: 0 0 6px var(--daw-led);
+  pointer-events: none;
+}
+
+/* Piano Roll */
+
+/* A definite height rather than a content one.
+   The keyboard is 25 keys tall and the grid has to show all of them, so the panel
+   asks for a share of the window and scrolls its own grid inside that. Sized by
+   content it would either be a slit you scroll or tall enough to push the rack off
+   the screen; sized in vh it is the same panel at every window height, and the
+   min-height keeps it usable when the window is short. */
+/* Tall enough that the transport, which now wraps to two rows on a narrow window,
+   still leaves the grid a usable height: the panel has a fixed height and the grid
+   takes what is left, so a second toolbar row comes straight out of the notes. */
+.piano-roll {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  height: 66vh;
+  min-height: 360px;
+  border-top: 1px solid var(--daw-border);
+  background: var(--daw-panel);
+}
+
+.pr__header {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--daw-border);
+}
+
+.pr__title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pr__pattern {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--daw-accent-soft);
+  color: var(--daw-accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.pr__meta {
+  font-size: 12px;
+  color: var(--ev-c-text-3);
+}
+
+.pr__close {
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+  padding: 0;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ev-c-text-2);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pr__close:hover {
+  background: var(--ev-c-gray-3);
+  color: var(--ev-c-text-1);
+}
+
+/* Transport */
+
+.pr__transport {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--daw-border);
+}
+
+.pr__play {
+  padding: 0 14px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: var(--daw-accent);
+  color: #0f1224;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 26px;
+  cursor: pointer;
+}
+
+.pr__play:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.pr__play[aria-pressed='true'] {
+  background: var(--daw-led);
+}
+
+.pr__loop {
+  padding: 0 12px;
+  border: 1px solid var(--daw-border);
+  border-radius: 5px;
+  background: var(--ev-c-gray-3);
+  color: var(--ev-c-text-2);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 26px;
+  cursor: pointer;
+}
+
+.pr__loop:hover {
+  background: var(--ev-c-gray-2);
+}
+
+.pr__loop[aria-pressed='true'] {
+  border-color: transparent;
+  background: var(--daw-led);
+  color: #0f1224;
+}
+
+/* Pattern length, as the row of bar counts the piano roll is measured in. */
+.pr__length {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.pr__length-label {
+  margin-right: 3px;
+  font-size: 11px;
+  color: var(--ev-c-text-3);
+}
+
+.pr__length-option {
+  min-width: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ev-c-text-2);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.pr__length-option:hover {
+  background: var(--ev-c-gray-3);
+}
+
+.pr__length-option[aria-pressed='true'] {
+  border-color: transparent;
+  background: var(--daw-accent);
+  color: #0f1224;
+}
+
+/* Zoom. The buttons are the same ones the length selector uses; only the readout
+   between them is its own thing. */
+.pr__zoom {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.pr__zoom-value {
+  min-width: 40px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--ev-c-text-3);
+}
+
+.pr__selection {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--daw-accent-soft);
+  color: var(--daw-accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.pr__position {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pr__hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ev-c-text-3);
+}
+
+/* Grid */
+
+/* Takes whatever the header and the transport leave, and passes it straight on:
+   the grid has to be free to shrink below its own content, which is what turns the
+   keyboard into something you scroll instead of something you only partly see. */
+.pr__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 16px 12px;
+}
+
+/* The one scroll container: both axes scroll here, and the ruler and keyboard are
+   pinned to its top and left edges by the sticky cells below. */
+.pr__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: #191920;
+}
+
+/* Ruler and keyboard are fixed gutters; the notes area takes the rest. Every size
+   here is a pixel number the panel works out, so the grid lines, the note
+   positions and the keys all come from the same figure and cannot disagree —
+   including as the zoom changes. */
+.pr__canvas {
+  display: grid;
+  grid-template-columns: var(--pr-keys-w) var(--pr-grid-w);
+  grid-template-rows: var(--pr-ruler-h) var(--pr-grid-h);
+  width: max-content;
+}
+
+/* Sits over the corner the ruler and the keyboard would otherwise leave. */
+.pr__corner {
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 3;
+  border-right: 1px solid var(--daw-border);
+  border-bottom: 1px solid var(--daw-border);
+  background: var(--daw-panel);
+}
+
+/* The ruler is where playback is started from, so it is its own cursor, and it
+   holds the play cursor's own marker. */
+.pr__ruler {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  border-bottom: 1px solid var(--daw-border);
+  background: var(--daw-panel);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.pr__ruler-bar {
+  flex-shrink: 0;
+  width: var(--pr-bar-w);
+  padding-left: 4px;
+  border-left: 1px solid var(--daw-border);
+  font-size: 10px;
+  line-height: var(--pr-ruler-h);
+  color: var(--ev-c-text-3);
+}
+
+/* The play cursor, repeated up here where it is set: a line in the grid is only
+   visible when the grid is scrolled to it. */
+.pr__ruler-cursor {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #ffffff;
+  pointer-events: none;
+}
+
+.pr__ruler-cursor[data-playing='false'] {
+  background: var(--daw-accent);
+  opacity: 0.9;
+}
+
+/* The keyboard. One row per key, in the same order and at the same height as the
+   grid's lanes, so a key always sits beside the row it stands for. */
+.pr-keys {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  border-right: 1px solid var(--daw-border);
+  background: var(--daw-panel);
+}
+
+.pr-key {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  box-sizing: border-box;
+  padding-right: 6px;
+  border-bottom: 1px solid #101014;
+  background: #e6e6ec;
+  cursor: pointer;
+  touch-action: none;
+}
+
+.pr-key[data-black='true'] {
+  background: #2b2b36;
+}
+
+/* The key the sample plays at, so the row a part was written in stays findable. */
+.pr-key[data-root='true'] {
+  background: rgba(108, 140, 255, 0.7);
+}
+
+.pr-key__name {
+  font-size: 9px;
+  font-weight: 600;
+  color: #6a6a78;
+  pointer-events: none;
+}
+
+.pr-key[data-black='true'] .pr-key__name {
+  color: #9494a6;
+}
+
+.pr-key[data-root='true'] .pr-key__name {
+  color: #0f1224;
+}
+
+/* Held down, which is also what it looks like: the key sounds for as long as the
+   press lasts, so a press has to be visibly different from a hover. Last, so it
+   wins over the root key's own colour. */
+.pr-key[data-pressed='true'] {
+  background: var(--daw-accent);
+  filter: brightness(1.15);
+}
+
+.pr-key[data-pressed='true'] .pr-key__name {
+  color: #0f1224;
+}
+
+.pr-grid {
+  position: relative;
+  overflow: hidden;
+  background-color: #191920;
+  background-image:
+    repeating-linear-gradient(to right, #3a3a48 0 1px, transparent 1px var(--pr-bar-w)),
+    repeating-linear-gradient(to right, #303039 0 1px, transparent 1px var(--pr-beat-w)),
+    repeating-linear-gradient(to right, #26262f 0 1px, transparent 1px var(--pr-cell-w));
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* Lane shading, so the grid reads like the keyboard beside it without needing a
+   line per semitone. Behind the notes, and out of the pointer's way. */
+.pr-rows {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.pr-row {
+  box-sizing: border-box;
+  border-bottom: 1px solid #202028;
+}
+
+.pr-row[data-black='true'] {
+  background: rgba(0, 0, 0, 0.3);
+}
+
+.pr-row[data-root='true'] {
+  background: rgba(108, 140, 255, 0.09);
+}
+
+.pr-row:last-child {
+  border-bottom: none;
+}
+
+/* Notes */
+
+/* The fill is the channel's colour, set inline: a note belongs to the channel it
+   plays through, so it is drawn in that channel's colour. */
+.pr-note {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid #0f1224;
+  border-radius: 2px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.pr-note:hover {
+  filter: brightness(1.3);
+}
+
+/* Selected notes are outlined rather than filled: the fill is the channel's
+   colour, and how hard the note is played is read from how solid that fill looks.
+   A selection that repainted them would hide the velocity. */
+.pr-note[data-selected='true'] {
+  outline: 2px solid #ffffff;
+  outline-offset: -1px;
+  filter: brightness(1.2);
+}
+
+/* The rectangle being dragged over empty grid. */
+.pr-marquee {
+  position: absolute;
+  z-index: 2;
+  border: 1px solid var(--daw-accent);
+  background: rgba(108, 140, 255, 0.16);
+  pointer-events: none;
+}
+
+/* Narrow, because the shortest note is one grid cell wide: a wider handle would
+   leave nothing of the note left to grab for moving it. Capped at half the note
+   rather than at 4px, since zooming out can make a note narrower than the
+   handle. */
+.pr-note__handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(4px, 50%);
+  border-radius: 0 2px 2px 0;
+  background: rgba(15, 18, 36, 0.5);
+  cursor: ew-resize;
+}
+
+/* The white line: where the transport is while it runs, and where it will start
+   from while it is stopped. Both are the same point in the pattern, so they are
+   the same line. */
+.pr-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: #ffffff;
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.75);
+  pointer-events: none;
+}
+
+/* Stopped, the line is the start point and can be dragged. It gets a hit area
+   wider than itself, because a 2px line is not something a pointer can find. */
+.pr-playhead[data-cursor='true'] {
+  background: #dcdcec;
+  box-shadow: none;
+  pointer-events: auto;
+  cursor: ew-resize;
+}
+
+.pr-playhead[data-cursor='true']::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  right: -5px;
 }
