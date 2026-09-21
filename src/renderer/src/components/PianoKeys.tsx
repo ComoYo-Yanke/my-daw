@@ -11,9 +11,9 @@ type PianoKeysProps = {
  * The piano roll's keyboard: one key per semitone the grid can hold, highest at
  * the top.
  *
- * Four octaves with the sample's own pitch (offset 0) in the middle — so the
- * range it offers is exactly the range a note can hold, and a note can never be
- * drawn somewhere the keyboard cannot point at.
+ * Five octaves, two of them below the sample's own pitch (offset 0) and three
+ * above — so the range it offers is exactly the range a note can hold, and a note
+ * can never be drawn somewhere the keyboard cannot point at.
  *
  * The keys are drawn as a semitone ruler rather than as a real keyboard: every
  * key is a full-width row, which is what makes each one line up with its lane in

@@ -723,6 +723,12 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
   const handleNotePointerDown = (event: React.PointerEvent, note: Note): void => {
     if (event.button !== 0) return
 
+    // Pressing a note auditions it, whatever else the press turns into. The same
+    // preview the keyboard gives, so it goes through the channel's own volume,
+    // pan, mute and solo — what is heard is how the note will be played, not a
+    // separate sound for the piano roll.
+    handlePreview(note.pitch)
+
     const inSelection = selected.has(note.id)
     const ids = inSelection ? selectedIds : [note.id]
     if (!inSelection) setSelectedIds([note.id])
@@ -745,6 +751,10 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
    */
   const handleHandlePointerDown = (event: React.PointerEvent, note: Note): void => {
     if (event.button !== 0) return
+
+    // The right edge is part of the note, so pressing it is pressing the note:
+    // the same audition, rather than a few pixels of silence.
+    handlePreview(note.pitch)
 
     const inSelection = selected.has(note.id)
     if (!inSelection) setSelectedIds([note.id])
@@ -790,6 +800,12 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
       snapping(event.altKey)
     )
     setSelectedIds([note.id])
+    // Auditioned the moment it lands: a note is put on a pitch by ear, and
+    // waiting for the transport to come round to it would make drawing a part a
+    // matter of writing it down first and checking it afterwards. Read off the
+    // note rather than off the press, so the pitch heard is the one written —
+    // the two are the same today, and this is what keeps them the same.
+    handlePreview(note.pitch)
     // Zero at the grab, so the length the pointer drags out is the length the note
     // gets: the edge follows the pointer rather than starting a cell ahead of it.
     startDrag(event, {
@@ -982,7 +998,7 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
               title={
                 option === 'draw'
                   ? '画笔：空白拖动画音符，拖出长度'
-                  : '框选：空白拖动拉出矩形，框住经过的音符（Ctrl 追加选择）'
+                  : '框选：空白拖动拉出矩形，框住经过的音符（Shift+拖动；Ctrl+Shift+拖动＝在已选之上追加）'
               }
             >
               {option === 'draw' ? '✏ 画笔' : '▭ 框选'}

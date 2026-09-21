@@ -220,15 +220,21 @@ export function minNoteSec(bpm: number, division: number = STEPS_PER_BEAT): numb
 
 // Piano keyboard.
 //
-// The vertical axis is four octaves of keys with the sample's own pitch in the
-// middle. That is what fixes a note's semitone offset to -24..+24: everything the
-// keyboard can point at, and nothing it cannot. Four octaves is more than fits on
-// screen at the default key height, which is what vertical scrolling and zooming
-// are for — the range is what is reachable, not what is visible.
+// The vertical axis is five octaves of keys, two below the sample's own pitch and
+// three above it. That is what fixes a note's semitone offset to -24..+36:
+// everything the keyboard can point at, and nothing it cannot. Five octaves is
+// more than fits on screen at the default key height, which is what vertical
+// scrolling and zooming are for — the range is what is reachable, not what is
+// visible.
+//
+// The two ends are not the same distance from offset 0, and that is deliberate:
+// the sample's own pitch is the floor a part is usually written up from, and a
+// line written high wants the third octave above it far more often than it wants
+// a third one below.
 
 export const KEY_HEIGHT_PX = 16
 export const LOWEST_PITCH = -24
-export const HIGHEST_PITCH = 24
+export const HIGHEST_PITCH = 36
 export const PIANO_KEY_COUNT = HIGHEST_PITCH - LOWEST_PITCH + 1
 
 /** Width of one 1/16 step on the time axis, in pixels. */
