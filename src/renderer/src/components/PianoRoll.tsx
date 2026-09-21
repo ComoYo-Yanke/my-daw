@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { usePanelSize } from '../hooks/usePanelSize'
 import { usePianoRollHead } from '../hooks/usePianoRollHead'
 import { usePlayheadSec } from '../hooks/usePlayheadSec'
 import {
@@ -113,6 +114,16 @@ const MARQUEE_THRESHOLD_PX = 4
 /** How much one zoom notch multiplies by, for the toolbar's buttons. */
 const ZOOM_STEP = 1.25
 
+/** The smallest the panel may be dragged to, in pixels. */
+const MIN_PANEL_WIDTH_PX = 400
+const MIN_PANEL_HEIGHT_PX = 300
+
+/** The share of the window's height the panel opens at, until it is resized. */
+const DEFAULT_PANEL_HEIGHT_RATIO = 0.66
+
+/** Where the panel's size is kept between launches. A workspace setting, not a project one. */
+const PANEL_SIZE_KEY = 'my-daw:piano-roll-size'
+
 /** One shared empty selection, so "nothing is selected" is one identity. */
 const NO_IDS: readonly string[] = []
 
@@ -146,10 +157,50 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
   const setGridDivision = useDawStore((state) => state.setGridDivision)
   const setPianoRollStart = useDawStore((state) => state.setPianoRollStart)
   const cursorSec = useDawStore(selectPianoRollStartSec)
+  const tool = useDawStore((state) => state.pianoRollTool)
+  const setPianoRollTool = useDawStore((state) => state.setPianoRollTool)
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<Drag | null>(null)
+  const panelRef = useRef<HTMLElement>(null)
+
+  // The panel's own size, dragged from its edges and remembered between launches.
+  const { size: panelSize, beginResize } = usePanelSize(
+    PANEL_SIZE_KEY,
+    panelRef,
+    { width: null, height: window.innerHeight * DEFAULT_PANEL_HEIGHT_RATIO },
+    MIN_PANEL_WIDTH_PX,
+    MIN_PANEL_HEIGHT_PX
+  )
+
+  /**
+   * Whether Shift is down, followed on the window rather than read off events.
+   *
+   * A press carries its own `shiftKey`, which is the obvious source; the box
+   * select gesture has stopped depending on it being right, and this is the
+   * second line of defence for the shortcuts that still go through modifiers.
+   */
+  const shiftRef = useRef(false)
+  useEffect(() => {
+    // `keyup` carries the state after the key, which is what makes a release read
+    // as false. A window that loses focus while Shift is down never sees the
+    // release at all, so blur has to clear it.
+    const sync = (event: KeyboardEvent): void => {
+      shiftRef.current = event.shiftKey
+    }
+    const clear = (): void => {
+      shiftRef.current = false
+    }
+    window.addEventListener('keydown', sync)
+    window.addEventListener('keyup', sync)
+    window.addEventListener('blur', clear)
+    return () => {
+      window.removeEventListener('keydown', sync)
+      window.removeEventListener('keyup', sync)
+      window.removeEventListener('blur', clear)
+    }
+  }, [])
 
   /**
    * Where the content under the pointer should still be after a zoom.
@@ -256,6 +307,19 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
 
   /** Whether a drag lands on the grid: off while Alt is held, or the switch is off. */
   const snapping = useCallback((altKey: boolean): boolean => snapEnabled && !altKey, [snapEnabled])
+
+  /**
+   * Whether a press on empty grid is asking to select rather than to draw.
+   *
+   * The 框选 tool is the way in, and Shift still works as it always did — the
+   * tool existing is what keeps box selecting reachable when a modifier does not
+   * arrive, which is the whole reason it was added.
+   */
+  const selecting = useCallback(
+    (event: Pick<React.PointerEvent, 'shiftKey'>): boolean =>
+      tool === 'select' || event.shiftKey || shiftRef.current,
+    [tool]
+  )
 
   /** Where a note is drawn, which is also how it is hit-tested. */
   const rectForNote = useCallback(
@@ -608,15 +672,17 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
   /**
    * A press on empty grid.
    *
-   * The bare gesture draws: the note appears where the press landed and its length
-   * follows the pointer, which is FL's own default and the reason a note can be
-   * written in one movement. Shift is the way back to selecting, and Ctrl extends
-   * what is already selected rather than starting again.
+   * With the draw tool the bare gesture draws: the note appears where the press
+   * landed and its length follows the pointer, which is FL's own default and the
+   * reason a note can be written in one movement. With the select tool the same
+   * gesture drags out a rectangle instead, so box selecting no longer depends on
+   * a modifier arriving; Ctrl extends what is already selected rather than
+   * starting again, in either tool.
    */
   const handleGridPointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0) return
 
-    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+    if (selecting(event)) {
       startDrag(event, {
         kind: 'marquee',
         pointerStartX: event.clientX,
@@ -706,7 +772,44 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
   const positionBeat = Math.floor((lineSec % barSec) / beatSec) + 1
 
   return (
-    <section className="piano-roll" aria-label="钢琴卷帘">
+    <section
+      className="piano-roll"
+      aria-label="钢琴卷帘"
+      ref={panelRef}
+      // Height is always ours; width only once an edge has been dragged, so a
+      // panel nobody has resized still follows the window the way it used to.
+      style={{
+        height: `${panelSize.height}px`,
+        width: panelSize.width === null ? undefined : `${panelSize.width}px`
+      }}
+    >
+      {/* The panel's edges. They lie over the content, which is what keeps a grab
+          at the very edge from landing on the grid behind it. */}
+      <span
+        className="pr-resize"
+        data-edge="top"
+        title="拖动改变高度"
+        onPointerDown={(event) => beginResize('top', event)}
+      />
+      <span
+        className="pr-resize"
+        data-edge="left"
+        title="拖动改变宽度"
+        onPointerDown={(event) => beginResize('left', event)}
+      />
+      <span
+        className="pr-resize"
+        data-edge="right"
+        title="拖动改变宽度"
+        onPointerDown={(event) => beginResize('right', event)}
+      />
+      <span
+        className="pr-resize"
+        data-edge="corner"
+        title="拖动同时改变宽高"
+        onPointerDown={(event) => beginResize('corner', event)}
+      />
+
       <header className="pr__header">
         <span className="pr__title">钢琴卷帘 · {channel.name}</span>
         <span className="pr__pattern" title="当前 Pattern">
@@ -757,6 +860,26 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
         </button>
 
         <BpmField />
+
+        <div className="pr__length" role="group" aria-label="工具">
+          <span className="pr__length-label">工具</span>
+          {(['draw', 'select'] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              className="pr__length-option"
+              aria-pressed={tool === option}
+              onClick={() => setPianoRollTool(option)}
+              title={
+                option === 'draw'
+                  ? '画笔：空白拖动画音符，拖出长度'
+                  : '框选：空白拖动拉出矩形，框住经过的音符（Ctrl 追加选择）'
+              }
+            >
+              {option === 'draw' ? '✏ 画笔' : '▭ 框选'}
+            </button>
+          ))}
+        </div>
 
         <div className="pr__length" role="group" aria-label="Pattern 长度（小节）">
           <span className="pr__length-label">长度</span>
@@ -837,9 +960,9 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
         )}
 
         <span className="pr__hint">
-          空白拖动＝画音符（拖出长度）· Shift+拖动＝框选 · 右边缘拖动＝改长度 · 标尺＝播放起点 ·
-          拖动音符＝移动 · 右键＝删除 · 空格＝播放 · Ctrl+Z＝撤销 · Ctrl+滚轮＝缩放 ·
-          Alt＝临时取消吸附
+          空白拖动＝画音符（拖出长度）· 「框选」工具或 Shift+拖动＝框选 · 右边缘拖动＝改长度 ·
+          标尺＝播放起点 · 拖动音符＝移动 · 右键＝删除 · 空格＝播放 · Ctrl+Z＝撤销 ·
+          Ctrl+滚轮＝缩放 · Alt＝临时取消吸附
         </span>
       </div>
 

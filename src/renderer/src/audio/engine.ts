@@ -17,7 +17,16 @@
 // source node is created per trigger, because AudioBufferSourceNode is
 // single-use by spec.
 //
+// Pitch is not a playback rate. A source playing at 2x is not the same note an
+// octave up — it is the same note played twice as fast, so it also ends twice as
+// early, and a note's length would then depend on its pitch. Every voice here
+// therefore plays at rate 1 and sounds whatever `pitchShiftedBuffer` handed it:
+// a copy of the sample re-pitched ahead of time, of its original length. The
+// note's own `lengthSec` is then the only thing that decides how long it lasts.
+//
 // No React and no store access here: this is plain Web Audio.
+
+import { SimpleFilter, SoundTouch } from 'soundtouchjs'
 
 import type { Note } from '../types/note'
 
@@ -159,9 +168,183 @@ function disposeVoice(voice: Voice): void {
   }
 }
 
-/** The playback rate that sounds a note's semitone offset: one octave, one octave. */
-export function rateForPitch(pitch: number): number {
-  return 2 ** (pitch / 12)
+// Pitch shifting.
+//
+// SoundTouch is a time-domain shifter: it stretches the sample by 1/pitch and
+// then resamples by pitch, so the two cancel out and the copy comes back the
+// length it went in. That is the whole point — transposing a note must not touch
+// how long it lasts.
+//
+// The shifting happens once, up front, rather than per voice at playback time.
+// A real-time shifter would be a node in every voice's chain, and it would put a
+// processing latency between `start(when)` and the first audible sample, which
+// is exactly the thing the scheduler above does not have. Rendering the copy
+// ahead of time keeps voices plain buffer sources, so notes still start on the
+// sample the clock was told about.
+//
+// The cost is that rendering is synchronous and blocks the main thread, so the
+// result is cached for as long as the sample it came from is alive: one render
+// per (sample, pitch), not per note. Pitch 0 renders nothing at all, which is
+// the case every step-sequencer trigger is.
+
+/** Frames per pull. Also the ceiling on how much output one call can return. */
+const SHIFT_CHUNK_FRAMES = 4096
+
+/**
+ * Frames of silence appended to a sample before it is shifted.
+ *
+ * The filter that drives SoundTouch only pumps its pipe once it can fill a whole
+ * 16384-frame block, and it gives up for good the moment a source hands back
+ * less than it asked for. A sample shorter than one block — every drum hit, most
+ * one-shots — would therefore shift into nothing at all. Feeding silence past
+ * the end keeps the source supplying until the shifter's window has carried the
+ * sample's real tail out, and the window lags behind by about one block, so two
+ * blocks of padding covers it. The padding is trimmed off the result afterwards.
+ */
+const SHIFT_PAD_FRAMES = 16384 * 2
+
+/**
+ * Shifted copies, keyed by sample first and pitch second.
+ *
+ * Weak on the sample because a sample's buffer is the thing that gets replaced
+ * when a file is reloaded; its shifted copies have no meaning without it and
+ * should not outlive it.
+ */
+const pitchShiftCache = new WeakMap<AudioBuffer, Map<number, AudioBuffer>>()
+
+/**
+ * An AudioBuffer seen as a stream of interleaved stereo frames, with silence
+ * stuck on the end. This is what SoundTouch pulls from.
+ *
+ * Two things it does that the library's own buffer source does not. It pads,
+ * because of the block size above. And it reads past the end as silence rather
+ * than as whatever the underlying typed array has there — its `extract` is
+ * always asked for more frames than the sample has left.
+ */
+class PaddedSampleSource {
+  private readonly left: Float32Array
+  private readonly right: Float32Array
+  /** Length of the sample itself, in frames. Padding starts here. */
+  private readonly frames: number
+  /** Real audio and padding together: everything this source can supply. */
+  private readonly total: number
+
+  constructor(buffer: AudioBuffer) {
+    this.frames = buffer.length
+    this.total = this.frames + SHIFT_PAD_FRAMES
+    this.left = buffer.getChannelData(0)
+    // A mono sample reads from the same channel twice, which is what feeding the
+    // shifter two identical channels means.
+    this.right = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : this.left
+  }
+
+  /**
+   * Write up to `numFrames` frames from `position`, returning how many were
+   * written, or 0 once the padding is used up.
+   *
+   * A short read is what tells the filter to stop, so this returns everything it
+   * can rather than the whole request — the padding is the only reason the last
+   * read is ever short.
+   */
+  extract(target: Float32Array, numFrames = 0, position = 0): number {
+    const available = this.total - position
+    if (numFrames <= 0 || available <= 0) return 0
+
+    const count = Math.min(numFrames, available)
+    const audible = Math.max(0, Math.min(count, this.frames - position))
+
+    for (let i = 0; i < audible; i += 1) {
+      target[i * 2] = this.left[position + i]
+      target[i * 2 + 1] = this.right[position + i]
+    }
+    // Past the sample the padding is silence, and the caller's buffer is reused
+    // between reads, so it has to be written rather than left alone.
+    target.fill(0, audible * 2, count * 2)
+
+    return count
+  }
+}
+
+/**
+ * The sample a note at `semitones` should sound: the buffer itself at 0, and
+ * otherwise a re-pitched copy of it, rendered on first use and kept after.
+ *
+ * Always played at rate 1 — a caller that reaches for `playbackRate` instead
+ * gets the pitch but loses the note's length with it.
+ */
+export function pitchShiftedBuffer(buffer: AudioBuffer, semitones: number): AudioBuffer {
+  if (semitones === 0) return buffer
+
+  let byPitch = pitchShiftCache.get(buffer)
+  if (!byPitch) {
+    byPitch = new Map()
+    pitchShiftCache.set(buffer, byPitch)
+  }
+
+  const cached = byPitch.get(semitones)
+  if (cached) return cached
+
+  const shifted = renderPitchShift(buffer, semitones)
+  byPitch.set(semitones, shifted)
+  return shifted
+}
+
+/** Run a whole sample through SoundTouch once, at one pitch. */
+function renderPitchShift(buffer: AudioBuffer, semitones: number): AudioBuffer {
+  const context = getAudioContext()
+
+  const soundtouch = new SoundTouch()
+  soundtouch.pitchSemitones = semitones
+  const filter = new SimpleFilter(new PaddedSampleSource(buffer), soundtouch)
+
+  // Pull the shifted sample out in chunks. `extract` returns 0 once the source
+  // is drained and the pipe has run dry, which is the real end condition; the
+  // frame cap is only there so that a change in the library's behaviour cannot
+  // spin this loop forever. The padding is what the source can still supply past
+  // the sample, so a little over that is already past any honest result.
+  const scratch = new Float32Array(SHIFT_CHUNK_FRAMES * 2)
+  const chunks: Float32Array[] = []
+  const maxFrames = buffer.length + SHIFT_PAD_FRAMES + buffer.sampleRate
+  let frames = 0
+
+  while (frames < maxFrames) {
+    const extracted = filter.extract(scratch, SHIFT_CHUNK_FRAMES)
+    if (extracted <= 0) break
+    // A copy: the scratch buffer is reused by the next pull.
+    chunks.push(scratch.slice(0, extracted * 2))
+    frames += extracted
+  }
+
+  // A shift is length-preserving, so the sample's own length is where its signal
+  // ends and the padding begins. Cutting there drops the padding and nothing
+  // else — and makes the copy exactly as long as the sample it came from, so a
+  // note at any pitch reaches the end of its sample at the same moment.
+  const length = Math.min(frames, buffer.length)
+
+  // No decoded sample is empty, so a length of 0 is a guard against the library
+  // changing shape rather than a case that happens. Unpitched beats unplayable.
+  if (length === 0) return buffer
+
+  // The filter reads at most two channels and hands them back interleaved, so a
+  // mono sample would come home twice as wide as it left. Keep what it had.
+  const channels = Math.min(buffer.numberOfChannels, 2)
+  const shifted = context.createBuffer(channels, length, buffer.sampleRate)
+
+  for (let channel = 0; channel < channels; channel += 1) {
+    const target = shifted.getChannelData(channel)
+    let write = 0
+    for (const chunk of chunks) {
+      // De-interleave: the chunks are stereo, so this channel's frames sit every
+      // other sample, starting at the channel's own index.
+      for (let read = channel; read < chunk.length && write < length; read += 2) {
+        target[write] = chunk[read]
+        write += 1
+      }
+      if (write === length) break
+    }
+  }
+
+  return shifted
 }
 
 /**
@@ -181,13 +364,14 @@ export function gainForVelocity(velocity: number): number {
  * Voices are independent, so a channel can overlap with itself — the same way
  * hitting a drum pad twice does. `pitch` is a semitone offset like a note's, so
  * a piano key can audition the note it stands for without a note existing yet.
+ * Auditioning is pitched the same way a note is, so the key and the note it
+ * would draw sound alike.
  */
 export function triggerStrip(strip: ChannelStrip, buffer: AudioBuffer, pitch = 0): void {
   const context = getAudioContext()
 
   const source = context.createBufferSource()
-  source.buffer = buffer
-  source.playbackRate.value = rateForPitch(pitch)
+  source.buffer = pitchShiftedBuffer(buffer, pitch)
   source.connect(strip.gain)
   trackVoice(strip, source)
 
@@ -225,7 +409,8 @@ export function playNoteSequence(
  * that do not overlap, the way the step sequencer does.
  *
  * Note length is therefore audible: a short note chops the sample, a long one
- * lets it ring. Pitch is a semitone offset applied as a playback rate, and
+ * lets it ring. Pitch is a semitone offset, sounded by a re-pitched copy of the
+ * sample rather than by a playback rate, so it cannot affect that length;
  * velocity scales that voice's own gain.
  *
  * `startAtSec` is an absolute `AudioContext.currentTime` value, so the caller can
@@ -250,8 +435,7 @@ export function scheduleNoteSequence(
     const noteStart = startAtSec + note.startSec
 
     const source = context.createBufferSource()
-    source.buffer = buffer
-    source.playbackRate.value = rateForPitch(note.pitch)
+    source.buffer = pitchShiftedBuffer(buffer, note.pitch)
 
     // Velocity belongs to the note, so it needs a gain of its own: the strip's
     // gain is the channel's, and volume, mute and solo all write to that.
@@ -338,5 +522,30 @@ export function stopStrip(strip: ChannelStrip): void {
 export function stopAllStrips(): void {
   for (const strip of strips.values()) {
     stopStrip(strip)
+  }
+}
+
+/**
+ * Take one channel's strip apart: cut its voices, detach its nodes, forget it.
+ *
+ * Not the same thing as `stopStrip`, which only cuts the voices and leaves the
+ * strip ready to play again. This is for a channel that is going away — loading
+ * a project replaces the whole rack, and a strip left behind would stay wired to
+ * the destination for the rest of the session.
+ */
+export function releaseStrip(channelId: string): void {
+  const strip = strips.get(channelId)
+  if (!strip) return
+  stopStrip(strip)
+  strip.gain.disconnect()
+  strip.panner.disconnect()
+  strips.delete(channelId)
+}
+
+/** Take every strip apart. What loading a project and starting a new one both need. */
+export function releaseAllStrips(): void {
+  // Snapshot the keys: `releaseStrip` deletes from the map as it goes.
+  for (const channelId of [...strips.keys()]) {
+    releaseStrip(channelId)
   }
 }

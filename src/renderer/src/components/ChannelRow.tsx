@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import ChannelSteps from './ChannelSteps'
+import ContextMenu, { type ContextMenuItem } from './ContextMenu'
 import Knob from './Knob'
 import StepCountSwitch from './StepCountSwitch'
 import WaveformThumbnail from './WaveformThumbnail'
@@ -61,6 +62,7 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
   const toggleMute = useDawStore((state) => state.toggleMute)
   const toggleSolo = useDawStore((state) => state.toggleSolo)
   const duplicateChannel = useDawStore((state) => state.duplicateChannel)
+  const removeChannel = useDawStore((state) => state.removeChannel)
   const openPianoRoll = useDawStore((state) => state.openPianoRoll)
   const playChannelSequence = useDawStore((state) => state.playChannelSequence)
   const stopSequence = useDawStore((state) => state.stopSequence)
@@ -73,6 +75,8 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
    * lives here rather than in the store — the steps themselves do not.
    */
   const [stepsOpen, setStepsOpen] = useState(true)
+  /** Where the row's right-click menu is open, or null. */
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
 
   // Each row reads its own position: channels loop over their own step counts,
   // so there is no single "current step" the rack could be handed from above.
@@ -134,9 +138,30 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
     openPianoRoll(channel.id)
   }
 
+  /**
+   * The row's own menu.
+   *
+   * Delete is the one action that reaches past this row: a channel's notes and
+   * steps are filed under its id in every pattern, so they all go with it. That
+   * is one undo step, which is what it relies on instead of asking first.
+   */
+  const menuItems: ContextMenuItem[] = [
+    { label: '重命名', run: () => setDraft(channel.name) },
+    { label: '复制', run: () => duplicateChannel(channel.id) },
+    { label: '删除', danger: true, run: () => removeChannel(channel.id) }
+  ]
+
   return (
-    <div className="channel" onDoubleClick={handleDoubleClick}>
-      <span className="channel__led" data-active={isSounding} aria-hidden="true" />
+    <>
+      <div
+        className="channel"
+        onDoubleClick={handleDoubleClick}
+        onContextMenu={(event) => {
+          event.preventDefault()
+          setMenu({ x: event.clientX, y: event.clientY })
+        }}
+      >
+        <span className="channel__led" data-active={isSounding} aria-hidden="true" />
 
       <div className="channel__identity" title="双击通道其他位置打开钢琴卷帘">
         {draft === null ? (
@@ -282,7 +307,14 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
         value={channel.stepCount}
         onChange={(stepCount: StepCount) => setStepCount(channel.id, stepCount)}
       />
-    </div>
+      </div>
+
+      {/* Outside the row, so a right-click inside the menu does not bubble back
+          to the row and reopen it. */}
+      {menu !== null && (
+        <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
+      )}
+    </>
   )
 }
 

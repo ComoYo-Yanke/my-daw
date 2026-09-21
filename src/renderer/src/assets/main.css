@@ -26,6 +26,25 @@ body {
   height: 100%;
 }
 
+/* Everything between the toolbar and the piano roll. A row, so the sample
+   library can sit beside the rack; `.daw__main` puts the column back for what
+   is left. Both need an explicit share of the height — the flex default would
+   let them collapse to their content and clip the rack's scrolling. */
+.daw__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.daw__main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  /* Without this a wide channel row would push the library off the window
+     instead of scrolling inside `.content`. */
+  min-width: 0;
+}
+
 /* Toolbar */
 
 .toolbar {
@@ -91,6 +110,74 @@ body {
   color: #0f1224;
 }
 
+/* File menu */
+
+.file-menu {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+}
+
+/* Which project 保存 would write over. It is the difference between saving and
+   being asked where to save, so it belongs next to the button that does it. */
+.toolbar__project {
+  max-width: 160px;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--ev-c-text-3);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.file-menu__list {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  /* Over the pattern bar, which is the next thing down. */
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 4px;
+  border: 1px solid var(--daw-border);
+  border-radius: 6px;
+  background: var(--daw-panel);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+}
+
+.file-menu__item {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ev-c-text-1);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 28px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-menu__item:hover:not(:disabled) {
+  background: var(--ev-c-gray-3);
+}
+
+.file-menu__item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.file-menu__keys {
+  font-size: 11px;
+  line-height: 28px;
+  color: var(--ev-c-text-3);
+}
+
 /* Tempo. Feeds every derived time in the project, so it sits with the transport
    rather than inside any one editor. */
 .bpm {
@@ -153,6 +240,28 @@ body {
   font-size: 12px;
   line-height: 22px;
   cursor: pointer;
+}
+
+/* Toast */
+
+/* Pinned over the bottom of the window rather than placed in the layout: it is a
+   receipt for something that already happened, and it must not push the rack
+   down for two seconds every time a project is saved. */
+.toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  z-index: 40;
+  padding: 8px 18px;
+  border: 1px solid var(--daw-border);
+  border-radius: 999px;
+  background: rgba(20, 20, 26, 0.95);
+  color: var(--ev-c-text-1);
+  font-size: 13px;
+  transform: translateX(-50%);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
+  /* It is a message, not a control: clicks should land on what is under it. */
+  pointer-events: none;
 }
 
 /* Pattern switcher */
@@ -266,6 +375,119 @@ body {
 .pattern-bar__add:hover {
   border-color: var(--daw-accent);
   color: var(--daw-accent);
+}
+
+/* Sample library */
+
+/* A fixed width rather than a share of the window: the names in it are short and
+   known, and a sidebar that breathed with the window would take width away from
+   the step grids, which are the thing that actually needs it. */
+.library {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 190px;
+  border-right: 1px solid var(--daw-border);
+  background: var(--daw-panel);
+}
+
+.library__header {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 8px 8px 8px 16px;
+  border-bottom: 1px solid var(--daw-border);
+}
+
+.library__title {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.library__close {
+  padding: 0 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ev-c-text-3);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.library__close:hover {
+  background: var(--ev-c-gray-3);
+  color: var(--ev-c-text-1);
+}
+
+.library__tree {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 0;
+}
+
+.library__category-button {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  padding: 0 12px;
+  border: none;
+  background: transparent;
+  color: var(--ev-c-text-1);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 26px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.library__category-button:hover {
+  background: var(--ev-c-gray-3);
+}
+
+.library__arrow {
+  width: 12px;
+  color: var(--ev-c-text-3);
+}
+
+.library__group-label {
+  display: block;
+  padding-left: 26px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 20px;
+  color: var(--ev-c-text-3);
+}
+
+.library__sample {
+  display: block;
+  width: 100%;
+  padding: 0 12px 0 38px;
+  border: none;
+  background: transparent;
+  color: var(--ev-c-text-2);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 24px;
+  text-align: left;
+  cursor: pointer;
+}
+
+/* A category with no sub-headings — guitar, piano — so its entries hang off the
+   category itself rather than off a heading that is not there. */
+.library__group--flat .library__sample {
+  padding-left: 26px;
+}
+
+.library__sample:hover {
+  background: var(--daw-accent-soft);
+  color: var(--ev-c-text-1);
 }
 
 /* Rack */
