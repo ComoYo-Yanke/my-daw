@@ -71,6 +71,11 @@ export function secondsPerStep(bpm: number): number {
  * is a separate question from the step sequencer's own 1/16 grid — that one is
  * fixed by `STEPS_PER_BEAT` and is not affected by this.
  *
+ * Only part of this list is reachable: the roll picks from it by zoom level, and
+ * `gridDivisionForZoom` is where the zoom is read as one of these. The list is
+ * the whole vocabulary rather than the reachable subset, because a division is
+ * also what a note's length and a pattern's edges are measured in.
+ *
  * Every entry is a halving of the one before it, which is what `drawnCells`
  * relies on. The last two are finer than anything that can be played by hand;
  * they are there so a note can be *placed* accurately — nudged to sit exactly
@@ -124,17 +129,68 @@ export function drawnCells(cellsPerBar: number, barWidthPx: number): number {
  *
  * Belongs to the pattern rather than to the module, because a pattern is the
  * unit that has a length: the piano roll edits up to it, and the playlist places
- * whole repeats of it. A default of 16 is long enough to write a section in
- * without scrolling and short enough to see the whole grid.
+ * whole repeats of it.
+ *
+ * Every entry is a doubling of the one before it, which is what `grownLengthBars`
+ * relies on: a pattern extends by taking the next entry, not by adding a bar.
  */
 export const LENGTH_BAR_OPTIONS = [4, 8, 16, 32, 64] as const
-export const DEFAULT_LENGTH_BARS = 16
-export const MIN_LENGTH_BARS = 4
-export const MAX_LENGTH_BARS = 64
+export const MIN_LENGTH_BARS = LENGTH_BAR_OPTIONS[0]
+export const MAX_LENGTH_BARS = LENGTH_BAR_OPTIONS[LENGTH_BAR_OPTIONS.length - 1]
+
+/**
+ * The length a new pattern starts at: the shortest one.
+ *
+ * Short because the roll grows the pattern by itself the moment a note is put
+ * past the end — a longer default would only be four more bars of empty grid to
+ * scroll past, and the length the part actually needs is the one it ends up at.
+ */
+export const DEFAULT_LENGTH_BARS = MIN_LENGTH_BARS
 
 /** Keep a pattern length inside the range, as a whole number of bars. */
 export function clampLengthBars(lengthBars: number): number {
   return Math.min(Math.max(Math.round(lengthBars), MIN_LENGTH_BARS), MAX_LENGTH_BARS)
+}
+
+/**
+ * The length after the one given: the room a pattern would grow into.
+ *
+ * This is how much of the grid the roll draws *past* the pattern's end. It has
+ * to draw some, because the grid is otherwise exactly as wide as the pattern and
+ * "outside the last bar" would be a place with no pixels in it to click.
+ *
+ * One step and not more, so that what is drawn past the end is exactly the room
+ * a note has to be put in for the pattern to grow at all — the dimmed strip is
+ * not slack, it is the next length, shown.
+ *
+ * The longest pattern answers itself: there is no next entry and nothing past
+ * the end to draw, which is what stops it growing further.
+ */
+export function nextLengthBars(lengthBars: number): number {
+  return LENGTH_BAR_OPTIONS.find((option) => option > lengthBars) ?? MAX_LENGTH_BARS
+}
+
+/**
+ * How long a pattern has to be to hold something ending at `endSec`.
+ *
+ * Grows only, and by whole entries of `LENGTH_BAR_OPTIONS`: a note put past the
+ * end takes the pattern to the next length the roll offers rather than adding a
+ * bar at a time, so the grid keeps landing on lengths the toolbar can name.
+ *
+ * Never shrinks. That is what makes deleting the note that grew a pattern leave
+ * the pattern where the user put it — taking a length back is the toolbar's job,
+ * not a side effect of an edit.
+ *
+ * The question is asked in seconds rather than in bars, and with a tolerance,
+ * because an end time is a *sum of floats*: a note clamped to end exactly at the
+ * pattern's end can come back a fraction of an ulp past it. That is not an
+ * overhang, and rounding it up would grow the pattern on a drag that moved
+ * nothing — so anything within a nanosecond of the end counts as inside it.
+ */
+export function lengthBarsForEnd(bpm: number, lengthBars: number, endSec: number): number {
+  if (endSec <= sequenceSec(bpm, lengthBars) + 1e-9) return lengthBars
+  const neededBars = Math.ceil(endSec / secondsPerBar(bpm))
+  return LENGTH_BAR_OPTIONS.find((option) => option >= neededBars) ?? MAX_LENGTH_BARS
 }
 
 /** How long one pass of a pattern is, in seconds. */
@@ -186,6 +242,40 @@ export const MIN_STEP_PX = 3
 export const MAX_STEP_PX = 256
 export const MIN_KEY_PX = 7
 export const MAX_KEY_PX = 48
+
+/**
+ * The coarsest and finest grid the zoom can ask for: a 1/4 note and a 1/64.
+ *
+ * `GRID_DIVISIONS` offers a 1/128 and a 1/256 as well, and they stay in the list
+ * because a division type is what the rest of the module speaks. They are simply
+ * outside what a zoom level maps onto: coarser than a 1/4 leaves a note nowhere
+ * to be placed but on the beat, and finer than a 1/64 is below what a drag can
+ * aim at, so a grid there would be a promise the pointer cannot keep.
+ */
+export const ZOOM_MIN_DIVISION = 1
+export const ZOOM_MAX_DIVISION = 16
+
+/**
+ * The snap grid a zoom level asks for.
+ *
+ * Tied to the zoom rather than picked by hand, because the grid is what a drag
+ * aims at: a fine grid at a coarse zoom puts the lines on top of each other, and
+ * a coarse grid at a fine zoom leaves the pointer between two lines with no
+ * finer place to land. At 100% — one 1/16 step at `STEP_PX` — the grid is a
+ * 1/16, and every doubling or halving of the zoom moves it one entry of
+ * `GRID_DIVISIONS` with it: past about 140% it becomes a 1/32, past about 280% a
+ * 1/64, and below about 70% a 1/8, below about 35% a 1/4.
+ *
+ * Nearest power of two rather than a threshold per level, so the grid steps by
+ * doubling instead of by a number chosen here — and so that the boundaries land
+ * exactly halfway between two levels rather than wherever the constants do.
+ */
+export function gridDivisionForZoom(stepPx: number): GridDivision {
+  const exact = DEFAULT_GRID_DIVISION * (stepPx / STEP_PX)
+  const wanted = 2 ** Math.round(Math.log2(Math.max(exact, ZOOM_MIN_DIVISION)))
+  const clamped = Math.min(Math.max(wanted, ZOOM_MIN_DIVISION), ZOOM_MAX_DIVISION)
+  return clamped as GridDivision
+}
 
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 

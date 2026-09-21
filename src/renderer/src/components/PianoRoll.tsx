@@ -14,7 +14,6 @@ import BpmField from './BpmField'
 import PianoKeys from './PianoKeys'
 import {
   BEATS_PER_BAR,
-  GRID_DIVISIONS,
   KEY_HEIGHT_PX,
   LENGTH_BAR_OPTIONS,
   MAX_KEY_PX,
@@ -28,8 +27,10 @@ import {
   STEPS_PER_BEAT,
   clampRow,
   drawnCells,
+  gridDivisionForZoom,
   gridLabel,
   isBlackKey,
+  nextLengthBars,
   noteName,
   pitchForRow,
   rowForPitch,
@@ -307,7 +308,20 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
   const barSec = secondsPerBar(bpm)
   const sequenceLengthSec = sequenceSec(bpm, lengthBars)
   const barPx = stepPx * STEPS_PER_BEAT * BEATS_PER_BAR
-  const gridWidthPx = lengthBars * barPx
+  /**
+   * How much of the grid is drawn: the pattern, plus the one length it would
+   * grow into next.
+   *
+   * The extra is not decoration. The grid is otherwise exactly as wide as the
+   * pattern, which leaves "past the last bar" with no pixels in it — nothing to
+   * click, and so no way to ask for a longer pattern. The strip past the end is
+   * drawn dimmed, and a note put in it takes the pattern there.
+   *
+   * At the longest length this is the length itself and the strip is gone, which
+   * is what a pattern that cannot grow any further should look like.
+   */
+  const renderBars = nextLengthBars(lengthBars)
+  const gridWidthPx = renderBars * barPx
   const gridHeightPx = PIANO_KEY_COUNT * keyPx
   /**
    * One cell of the *drawn* grid, in pixels.
@@ -448,6 +462,22 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
     element.addEventListener('wheel', handleWheel, { passive: false })
     return () => element.removeEventListener('wheel', handleWheel)
   }, [])
+
+  /**
+   * The snap grid follows the zoom.
+   *
+   * Pushed into the store rather than derived where it is used, because it is
+   * not only this panel that needs it: the store's own actions snap and clamp
+   * against `gridDivision`, and the margin the cursor is held inside the pattern
+   * by is one cell of it. One value in one place, so a drag and the note it
+   * writes cannot disagree about the grid.
+   *
+   * The zoom itself stays local: it is a way of looking at the pattern, not
+   * something the project has an opinion about, and it belongs to this one roll.
+   */
+  useEffect(() => {
+    setGridDivision(gridDivisionForZoom(stepPx))
+  }, [stepPx, setGridDivision])
 
   /** Drags are tracked on the window: the pointer is free to leave the grid. */
   useEffect(() => {
@@ -976,20 +1006,15 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
           ))}
         </div>
 
-        <div className="pr__length" role="group" aria-label="网格细分">
+        {/* A readout rather than a row of buttons: the grid is what the zoom
+            asks for, so the only thing worth saying here is which one is in
+            force. A button that the next wheel notch would undo is worse than
+            no button. */}
+        <div className="pr__length">
           <span className="pr__length-label">细分</span>
-          {GRID_DIVISIONS.map((division) => (
-            <button
-              key={division}
-              type="button"
-              className="pr__length-option"
-              aria-pressed={division === gridDivision}
-              onClick={() => setGridDivision(division)}
-              title={`吸附到 ${gridLabel(division)} 音符`}
-            >
-              {gridLabel(division)}
-            </button>
-          ))}
+          <span className="pr__division" title="吸附到当前细分；细分跟随缩放（Ctrl+滚轮）">
+            {gridLabel(gridDivision)}
+          </span>
         </div>
 
         <button
@@ -1053,8 +1078,12 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
             <div className="pr__corner" />
 
             <div className="pr__ruler" onPointerDown={handleRulerPointerDown}>
-              {Array.from({ length: lengthBars }, (_, index) => (
-                <span key={index} className="pr__ruler-bar">
+              {/* Numbered past the pattern's end as well as up to it: the bars
+                  that are not in the pattern yet are still bars, and where the
+                  pattern stops is marked in the grid below rather than by the
+                  ruler running out of numbers. */}
+              {Array.from({ length: renderBars }, (_, index) => (
+                <span key={index} className="pr__ruler-bar" data-outside={index >= lengthBars}>
                   {index + 1}
                 </span>
               ))}
@@ -1091,6 +1120,21 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
                   )
                 })}
               </div>
+
+              {/* The room the pattern grows into, dimmed, with the pattern's own
+                  end as its left edge. Over the lanes and under the notes: a note
+                  put here is an ordinary note, and it is the *pattern* that is
+                  about to change, not the note. */}
+              {renderBars > lengthBars && (
+                <div
+                  className="pr-grid__beyond"
+                  aria-hidden="true"
+                  style={{
+                    left: `${lengthBars * barPx}px`,
+                    width: `${(renderBars - lengthBars) * barPx}px`
+                  }}
+                />
+              )}
 
               {notes.map((note) => {
                 const rect = rectForNote(note)

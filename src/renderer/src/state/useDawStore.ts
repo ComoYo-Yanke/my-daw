@@ -32,6 +32,7 @@ import {
   DEFAULT_VELOCITY,
   defaultNoteSec,
   HIGHEST_PITCH,
+  lengthBarsForEnd,
   LOWEST_PITCH,
   MAX_BPM,
   MAX_VELOCITY,
@@ -1385,13 +1386,22 @@ export const useDawStore = create<DawState>((set, get) => {
    * Replace one channel's notes in the current pattern, leaving every other
    * channel — and every other pattern — untouched.
    */
-  const patchNotes = (channelId: string, update: (notes: Note[]) => Note[]): void => {
+  const patchNotes = (
+    channelId: string,
+    update: (notes: Note[]) => Note[],
+    lengthBars?: number
+  ): void => {
     const { currentPatternId } = get()
     set((state) => ({
       patterns: state.patterns.map((pattern) =>
         pattern.id === currentPatternId
           ? {
               ...pattern,
+              // Written in the same `set` as the notes rather than by a call to
+              // `setPatternLengthBars`: a note put past the end and the longer
+              // pattern that makes room for it are one edit, and undoing it has
+              // to give back both at once.
+              lengthBars: lengthBars === undefined ? pattern.lengthBars : lengthBars,
               notesByChannel: {
                 ...pattern.notesByChannel,
                 [channelId]: update(pattern.notesByChannel[channelId] ?? NO_NOTES)
@@ -2668,31 +2678,32 @@ export const useDawStore = create<DawState>((set, get) => {
      * `snap` is whether the click lands on the grid — false while Alt is held, for
      * a note that has to sit between two lines. The pattern's edges still apply:
      * that is a finer grid, not an escape from the pattern.
+     *
+     * A click past the end of the pattern lengthens it instead of being pulled
+     * back inside — the roll draws one length past its end precisely so there is
+     * somewhere past the end to click.
      */
     addNote: (channelId, startSec, pitch, snap = true) => {
       const { bpm, gridDivision } = get()
       const lengthBars = selectLengthBars(get())
-      const start = clampNoteStart(
-        snap ? snapSec(startSec, bpm, gridDivision) : startSec,
-        defaultNoteSec(bpm, gridDivision),
-        bpm,
-        lengthBars
-      )
+      const noteSec = defaultNoteSec(bpm, gridDivision)
+      // Snapped and then asked to fit, in that order: a press past the pattern's
+      // end is a request for a longer pattern, so the length it needs is worked
+      // out from where the note wants to be rather than from where the current
+      // pattern would allow it. The clamp below only bites at the longest
+      // pattern, which is the one length that cannot grow.
+      const wantedSec = Math.max(0, snap ? snapSec(startSec, bpm, gridDivision) : startSec)
+      const grown = lengthBarsForEnd(bpm, lengthBars, wantedSec + noteSec)
+      const start = clampNoteStart(wantedSec, noteSec, bpm, grown)
       const note: Note = {
         id: crypto.randomUUID(),
         startSec: start,
-        lengthSec: clampNoteLength(
-          defaultNoteSec(bpm, gridDivision),
-          start,
-          bpm,
-          lengthBars,
-          gridDivision
-        ),
+        lengthSec: clampNoteLength(noteSec, start, bpm, grown, gridDivision),
         pitch,
         velocity: DEFAULT_VELOCITY
       }
       pushUndo(`add:${channelId}`)
-      patchNotes(channelId, (notes) => [...notes, note])
+      patchNotes(channelId, (notes) => [...notes, note], grown)
       return note
     },
 
@@ -2700,18 +2711,21 @@ export const useDawStore = create<DawState>((set, get) => {
       if (notes.length === 0) return
       const { bpm, gridDivision } = get()
       const lengthBars = selectLengthBars(get())
-      // Legalised here rather than by the caller, so the rule that every note in
-      // the store fits inside its pattern survives a paste that overhangs.
+      // A paste that overhangs the end extends the pattern, the same as a note
+      // drawn there would: the rule that every note in the store fits inside its
+      // pattern survives, and what it costs is the pattern rather than the paste.
+      const furthestSec = Math.max(...notes.map((note) => note.startSec + note.lengthSec))
+      const grown = lengthBarsForEnd(bpm, lengthBars, furthestSec)
       const legal = notes.map((note) => {
-        const startSec = clampNoteStart(note.startSec, note.lengthSec, bpm, lengthBars)
+        const startSec = clampNoteStart(note.startSec, note.lengthSec, bpm, grown)
         return {
           ...note,
           startSec,
-          lengthSec: clampNoteLength(note.lengthSec, startSec, bpm, lengthBars, gridDivision)
+          lengthSec: clampNoteLength(note.lengthSec, startSec, bpm, grown, gridDivision)
         }
       })
       pushUndo(`add:${channelId}`)
-      patchNotes(channelId, (existing) => [...existing, ...legal])
+      patchNotes(channelId, (existing) => [...existing, ...legal], grown)
     },
 
     moveNotes: (channelId, origins, deltaSec, deltaPitch, snap = true) => {
@@ -2731,22 +2745,29 @@ export const useDawStore = create<DawState>((set, get) => {
       const lowestPitch = Math.min(...origins.map((note) => note.pitch))
       const highestPitch = Math.max(...origins.map((note) => note.pitch))
 
-      const moveSec = clamp(wantedSec, -earliestSec, sequenceSec(bpm, lengthBars) - latestSec)
+      // Dragged past the end, the pattern comes with it: the right edge is where
+      // the grid stops being drawn, not a wall the notes cannot be pushed
+      // through. Only the last length is a wall, and the clamp below still is.
+      const grown = lengthBarsForEnd(bpm, lengthBars, latestSec + wantedSec)
+      const moveSec = clamp(wantedSec, -earliestSec, sequenceSec(bpm, grown) - latestSec)
       const movePitch = clamp(wantedPitch, LOWEST_PITCH - lowestPitch, HIGHEST_PITCH - highestPitch)
 
       // Keyed on which notes are moving, so the whole drag folds into one step
       // and a later drag of the same notes, after a pause, is its own.
       pushUndo(`move:${channelId}:${origins.map((note) => note.id).join(',')}`)
-      patchNotes(channelId, (notes) =>
-        notes.map((note) => {
-          const origin = origins.find((item) => item.id === note.id)
-          if (!origin) return note
-          return {
-            ...note,
-            startSec: origin.startSec + moveSec,
-            pitch: origin.pitch + movePitch
-          }
-        })
+      patchNotes(
+        channelId,
+        (notes) =>
+          notes.map((note) => {
+            const origin = origins.find((item) => item.id === note.id)
+            if (!origin) return note
+            return {
+              ...note,
+              startSec: origin.startSec + moveSec,
+              pitch: origin.pitch + movePitch
+            }
+          }),
+        grown
       )
     },
 
@@ -2755,9 +2776,15 @@ export const useDawStore = create<DawState>((set, get) => {
 
       const { bpm, gridDivision } = get()
       const lengthBars = selectLengthBars(get())
-      const totalSec = sequenceSec(bpm, lengthBars)
       const minSec = minNoteSec(bpm, gridDivision)
       const wantedSec = snap ? snapSec(deltaSec, bpm, gridDivision) : deltaSec
+
+      // The same rule the drag follows: grow the pattern first, then work out
+      // how much room the group has. Read the other way round, the note that was
+      // dragged out past the end would stop at the edge it was dragged over.
+      const furthestSec = Math.max(...origins.map((note) => note.startSec + note.lengthSec))
+      const grown = lengthBarsForEnd(bpm, lengthBars, furthestSec + wantedSec)
+      const totalSec = sequenceSec(bpm, grown)
 
       // What the group as a whole can take, which is what keeps it rigid: the
       // note that runs out of room or hits the minimum stops the group instead of
@@ -2769,12 +2796,15 @@ export const useDawStore = create<DawState>((set, get) => {
       const resizeSec = clamp(wantedSec, -shrinkRoomSec, growRoomSec)
 
       pushUndo(`resize:${channelId}:${origins.map((note) => note.id).join(',')}`)
-      patchNotes(channelId, (notes) =>
-        notes.map((note) => {
-          const origin = origins.find((item) => item.id === note.id)
-          if (!origin) return note
-          return { ...note, lengthSec: origin.lengthSec + resizeSec }
-        })
+      patchNotes(
+        channelId,
+        (notes) =>
+          notes.map((note) => {
+            const origin = origins.find((item) => item.id === note.id)
+            if (!origin) return note
+            return { ...note, lengthSec: origin.lengthSec + resizeSec }
+          }),
+        grown
       )
     },
 

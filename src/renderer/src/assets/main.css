@@ -1666,6 +1666,19 @@ body {
   color: var(--ev-c-text-3);
 }
 
+/* The grid in force, which the zoom decides. A readout, so it is drawn like one
+   — no border, because a border is what says "press me", and there is nothing
+   here to press. */
+.pr__division {
+  min-width: 40px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--ev-c-text-2);
+}
+
 .pr__selection {
   padding: 2px 9px;
   border-radius: 999px;
@@ -1756,6 +1769,13 @@ body {
   color: var(--ev-c-text-3);
 }
 
+/* A bar past the pattern's end, which the roll draws so there is somewhere to
+   click to lengthen it. Fainter than the numbered bars that are in the pattern,
+   matching the dimmed strip below it. */
+.pr__ruler-bar[data-outside='true'] {
+  color: #4a4a58;
+}
+
 /* The play cursor, repeated up here where it is set: a line in the grid is only
    visible when the grid is scrolled to it. */
 .pr__ruler-cursor {
@@ -1831,16 +1851,39 @@ body {
   color: #0f1224;
 }
 
+/* Three weights on one surface, painted back to front — the earliest layer is
+   the topmost, so a bar line wins over the beat line under it and the beat line
+   over the subdivision under that. The order of the three is the hierarchy: the
+   bar is the brightest, then the beat, then the subdivision faintest, so a bar
+   can be found without counting cells and a cell can be aimed at without the
+   bars shouting over it. */
 .pr-grid {
   position: relative;
   overflow: hidden;
   background-color: #191920;
   background-image:
-    repeating-linear-gradient(to right, #3a3a48 0 1px, transparent 1px var(--pr-bar-w)),
-    repeating-linear-gradient(to right, #303039 0 1px, transparent 1px var(--pr-beat-w)),
-    repeating-linear-gradient(to right, #26262f 0 1px, transparent 1px var(--pr-cell-w));
+    repeating-linear-gradient(to right, #4a4a5e 0 1px, transparent 1px var(--pr-bar-w)),
+    repeating-linear-gradient(to right, #34343f 0 1px, transparent 1px var(--pr-beat-w)),
+    repeating-linear-gradient(to right, #232330 0 1px, transparent 1px var(--pr-cell-w));
   cursor: crosshair;
   touch-action: none;
+}
+
+/* The length past the pattern's end: the room it would grow into.
+
+   Dimmed rather than left as more grid, because it is not more pattern — a note
+   dropped here changes the pattern's length, and a surface that looks identical
+   to the rest would say otherwise. The left edge is the pattern's own end, which
+   is why it is drawn here rather than as a separate line: there is no second
+   place for it to be. */
+.pr-grid__beyond {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  box-sizing: border-box;
+  border-left: 2px solid #6c8cff;
+  background: rgba(12, 12, 18, 0.55);
+  pointer-events: none;
 }
 
 /* Lane shading, so the grid reads like the keyboard beside it without needing a
