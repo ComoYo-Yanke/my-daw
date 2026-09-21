@@ -60,7 +60,7 @@ npm run build:linux
 
 两套采样，都在「采样库」窗口里，上下排着。
 
-**内置库**（Drums / Guitar / Piano，共 17 个）是代码合成的，点一下就在机架上建一个通道并试听，不涉及任何文件。Drums 默认展开，其余收起。
+**内置库**（Drums / Guitar / Piano，共 18 个）是代码合成的，点一下就在机架上建一个通道并试听，不涉及任何文件。Drums 默认展开，其余收起。
 
 **自己的文件夹**：点「选择采样目录」，指向一个装着音频的文件夹。
 
@@ -199,7 +199,7 @@ Worth knowing:
 
 There are two sets, stacked in the 采样库 (sample library) window.
 
-**The built-in library** (Drums / Guitar / Piano, 17 sounds) is synthesised in code. Clicking one builds a channel on the rack and auditions it — no file involved. Drums starts expanded, the rest start collapsed.
+**The built-in library** (Drums / Guitar / Piano, 18 sounds) is synthesised in code. Clicking one builds a channel on the rack and auditions it — no file involved. Drums starts expanded, the rest start collapsed.
 
 **Your own folder**: click 选择采样目录 and point it at a folder of audio files.
 

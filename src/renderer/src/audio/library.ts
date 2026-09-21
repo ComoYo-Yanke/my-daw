@@ -195,6 +195,14 @@ export const LIBRARY: LibraryCategory[] = [
         label: '',
         samples: [
           {
+            path: 'library://piano/concert',
+            name: 'Concert Grand',
+            // 比另外三个高一点：它的峰值是开头那一下三根弦同相的瞬间，之后靠拍打
+            // 散开，撑住的那一段比峰值低一截。归一化只看峰值，所以这里得补回来。
+            level: 0.9,
+            synth: grandPiano(261.63, 3, 0.0004, 10)
+          },
+          {
             path: 'library://piano/grand',
             name: 'Grand Piano',
             level: 0.8,
@@ -507,6 +515,9 @@ function pluck(hz: number, damping: number, brightnessHz: number, lengthSec: num
  *
  * 高次谐波衰减得比基频快，所以音头是亮的、尾巴是圆 —— 这是钢琴听上去像钢琴的主要
  * 原因。振幅按 1/n^1.6 摊，比 1/n 暗一点，不那么像风琴。
+ *
+ * 这是简化版：泛音是精确的整数倍，一个音只有一根弦，也没有槌子。`grandPiano` 补的
+ * 就是这四件事。
  */
 function piano(hz: number, decaySec: number, harmonics: number): Synth {
   return ({ sampleRate }) => {
@@ -523,6 +534,119 @@ function piano(hz: number, decaySec: number, harmonics: number): Synth {
       // 音头的斜坡比别处长一点：钢琴的起音本来就不是一瞬间的事。
       data[index] = value * attackGain(tSec, 0.003)
     }
+    fadeOut(data, sampleRate, 0.03)
+    return data
+  }
+}
+
+// 三角钢琴的几个常数。
+//
+// 写死在这里而不是做成参数，是因为它们换一个值就不再是三角钢琴了：`piano` 的参数
+// 是拿来区分三种不同音色的，下面这些不是音色选项，是同一件乐器的事实。
+
+/**
+ * 一个音有几根弦，以及它们各自偏离音高多少音分。
+ *
+ * 中间那根是准的，两边各差 3 音分。真实的调律会把同音弦调到 1 音分以内，这里故意
+ * 拉开一点：三根弦差得越多拍得越快，而拍打正是长音在响的过程里一直在动的原因 ——
+ * 太准了反而死板。
+ */
+const GRAND_STRINGS_CENTS = [-3, 0, 3]
+
+/**
+ * 两段衰减的比例。
+ *
+ * 前一段占 `PROMPT_MIX` 的份量，时间常数是后一段的 1/`PROMPT_RATIO`。真实钢琴的振幅
+ * 一开始掉得很快，然后换成一个慢得多的尾巴接着走：只有一段指数衰减的话，听上去像
+ * 电子琴的持续音，而不是一根被敲响之后还在响的弦。
+ */
+const PROMPT_MIX = 0.45
+const PROMPT_RATIO = 5
+
+/** 槌击噪声的长度，秒。 */
+const HAMMER_SEC = 0.02
+
+/**
+ * 槌击噪声相对音色主体的响度。
+ *
+ * 真实钢琴里它就是很轻的一下。调到听得见噪声本身就已经过了 —— 它该做的是让音头听
+ * 起来是“敲”出来的，而不是自己成为一个声音。
+ */
+const HAMMER_MIX = 0.25
+
+/**
+ * 三角钢琴：在 `piano` 的谐波堆上补四件真钢琴才有的事。
+ *
+ * 原来那个 `piano` 是一串精确的整数倍谐波，所以听起来更接近风琴或者玻璃 —— 缺的
+ * 不是泛音数量，是下面这四件，而它们各自负责“像钢琴”的一部分：
+ *
+ * 1. 弦是硬的，泛音因此不是基频的整数倍，而是被往上撑开的（fₙ = n·f₀·√(1+B·n²)）。
+ *    这一条最要紧：整数倍泛音听起来是一个音高，被撑开的泛音听起来是一件乐器。
+ * 2. 一个音是几根弦一起响的，它们之间差着几音分，于是互相拍打。
+ * 3. 槌子打在弦上的那一下有噪声，很短，但音头是“敲”出来的还是“长”出来的全在它。
+ * 4. 衰减分两段：先快后慢。
+ *
+ * 代价是每个采样要多算好几倍，所以循环拆成了泛音在外、采样点在里 —— 这样衰减可以
+ * 一路乘下去，而不是每个采样点重新算一遍 exp。合成一次就进缓存，这笔账只在第一次
+ * 点到它的时候付。
+ */
+function grandPiano(hz: number, decaySec: number, inharmonicity: number, harmonics: number): Synth {
+  return ({ sampleRate, seed }) => {
+    const data = new Float32Array(frames(sampleRate, decaySec * 2.5))
+    const noise = noiseSource(seed)
+
+    // 三根弦各自的音高。先算好放在循环外面：这是个 2 的幂，写在采样点的循环里
+    // 要多算上千万次。
+    const stringHz = GRAND_STRINGS_CENTS.map((cents) => hz * 2 ** (cents / 1200))
+
+    for (let harmonic = 1; harmonic <= harmonics; harmonic += 1) {
+      // 撑开的泛音：频率是 n·f₀·√(1+B·n²) 而不是 n·f₀，次数越高偏得越多。
+      const stretch = Math.sqrt(1 + inharmonicity * harmonic * harmonic)
+      // 高次泛音散得快，所以音头是亮的、尾巴是圆的 —— 和 `piano` 一样。
+      const partialDecaySec = decaySec / harmonic ** 0.7
+      const weight = 1 / harmonic ** 1.6
+      // 每根弦每个采样点往前走的相位。同样是先算好：这一步里没有常数是变的。
+      const stepPerSample = stringHz.map(
+        (string) => (2 * Math.PI * string * harmonic * stretch) / sampleRate
+      )
+
+      // 衰减往下乘，而不是每个采样点重算 exp：exp 和 sin 一样贵，而这里它只是一
+      // 个固定的乘数。乘到末尾的累积误差在 1e-10 量级，听不出来。
+      const fastStep = Math.exp(-1 / (sampleRate * (partialDecaySec / PROMPT_RATIO)))
+      const slowStep = Math.exp(-1 / (sampleRate * partialDecaySec))
+      let fast = 1
+      let slow = 1
+
+      for (let index = 0; index < data.length; index += 1) {
+        let strings = 0
+        for (const step of stepPerSample) {
+          strings += Math.sin(step * index)
+        }
+        // 三根弦取平均而不是相加：一个音不会因为弦多就响三倍。
+        const decay = PROMPT_MIX * fast + (1 - PROMPT_MIX) * slow
+        data[index] += (strings / stepPerSample.length) * decay * weight
+        fast *= fastStep
+        slow *= slowStep
+      }
+    }
+
+    // 槌击噪声单独算一小段再叠上去，而不是跟着泛音堆一起走：它只活在开头十几毫秒
+    // 里，混在大循环里就得为它每个采样点判一次条件，而它几乎从不在场。
+    const hammer = new Float32Array(frames(sampleRate, HAMMER_SEC))
+    for (let index = 0; index < hammer.length; index += 1) {
+      const tSec = index / sampleRate
+      hammer[index] = noise() * Math.exp(-tSec / (HAMMER_SEC / 5))
+    }
+    // 削掉两头：太低是“咚”，太高是“嘶”，槌子打在弦上是中间那一点“哒”。
+    lowPass(hammer, 4000, sampleRate)
+    highPass(hammer, 300, sampleRate)
+
+    for (let index = 0; index < data.length; index += 1) {
+      // 音头的斜坡比 `piano` 再长一点：这是槌子，不是拨片。
+      const gained = data[index] * attackGain(index / sampleRate, 0.004)
+      data[index] = index < hammer.length ? gained + hammer[index] * HAMMER_MIX : gained
+    }
+
     fadeOut(data, sampleRate, 0.03)
     return data
   }
