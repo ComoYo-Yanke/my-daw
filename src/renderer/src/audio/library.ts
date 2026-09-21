@@ -1,6 +1,6 @@
 // 内置采样库：一台不需要任何文件的鼓机兼音源。
 //
-// 采样不是磁盘上的 WAV，而是几个合成函数的输出。理由很直接：仓库里不放二进制，
+// 大部分采样不是磁盘上的 WAV，而是几个合成函数的输出。理由很直接：仓库里不放二进制，
 // 工程文件也不用背着一堆音频 —— 一个内置采样的身份就是它的伪路径
 // （`library://drums/kick/808`）。打开工程时按同一个函数重新合成，听到的还是同一个
 // 声音。
@@ -10,8 +10,13 @@
 //
 // 合成在首次用到时做一次，结果缓存在这里。AudioBuffer 是不可变的，所以一个采样被
 // 多个通道共享是安全的 —— 和导入的采样走的是同一套。
+//
+// 例外是三角钢琴：它是真录音，30 个文件躺在 resources/samples 里跟着应用走。理由是
+// 合成不出来 —— 弦的不谐和性、槌子和音板的耦合能写出个大概，但听得出是假的。这一
+// 类采样按文件加载，加载完和合成的那批长得一样（见 `LibraryZone`）。
 
-import { getAudioContext } from './engine'
+import { decodeAudioData, getAudioContext, toArrayBuffer } from './engine'
+import type { SampleZone } from '../types/sample'
 
 /** 内置采样的伪路径前缀。工程文件靠它区分磁盘文件和库里合成出来的东西。 */
 export const LIBRARY_SCHEME = 'library://'
@@ -26,7 +31,30 @@ type SynthContext = {
 /** 一个合成函数：交出整段单声道 PCM，长度和内容都由它的参数决定。 */
 type Synth = (context: SynthContext) => Float32Array
 
-/** 一个内置采样。 */
+/**
+ * 真录音采样里的一份录音：它是哪个音，以及文件放在哪。
+ *
+ * `file` 是相对 `resources/samples` 的路径。打包之后这一层目录是主进程去读的，
+ * 渲染进程拿到的只是解好的音频。
+ */
+export type LibraryZone = {
+  /** 这份录音自己的音高，半音数，0 = 采样自己的基准音（卷帘把它叫 C4）。 */
+  pitch: number
+  file: string
+}
+
+/** 代码合成的采样：一个函数交出整段 PCM。 */
+type SynthSource = { synth: Synth }
+
+/** 打包进来的采样：一段音域一份录音，二选一。 */
+type FileSource = { zones: LibraryZone[] }
+
+/**
+ * 一个内置采样。
+ *
+ * 两种来源二选一：合成的，或者文件。对上层不是一回事 —— 加载方式差得远 —— 但对
+ * 播放是一回事：两种都会得到一张音域表（`SampleZone`），引擎照单收下。
+ */
 export type LibrarySample = {
   /** 伪路径，也是工程文件里存的东西。 */
   path: string
@@ -36,10 +64,12 @@ export type LibrarySample = {
    *
    * 库内部的一个粗混音：不这么做的话每个采样都会被归一化到同一个峰值，踩镲会和
    * 底鼓一样响。通道自己的音量仍然可以再拧。
+   *
+   * 合成的采样是「归一化到这个峰值」；文件采样按原样录进去的，这里是直接乘上去的
+   * 增益，1 就是不动它。
    */
   level: number
-  synth: Synth
-}
+} & (SynthSource | FileSource)
 
 /** 一个子分组。只有鼓组真的用得上，吉他和钢琴是一个 label 为空的平铺分组。 */
 type LibraryGroup = {
@@ -53,6 +83,59 @@ type LibraryCategory = {
   label: string
   groups: LibraryGroup[]
 }
+
+/**
+ * Salamander 三角钢琴的文件清单。
+ *
+ * 上游是按小三度一个一个录的，从 A0 到 C8 正好 30 个，所以这里只列音名，音高由
+ * 位置推出来 —— 30 行写死的数字就是 30 次打错的机会，而一个错的音高不会报错，
+ * 只会让那一段音域听起来不对劲。
+ *
+ * `Ds` 是升 D，`Fs` 是升 F：上游的写法，不是笔误。
+ */
+const SALAMANDER_FILES = [
+  'A0',
+  'C1',
+  'Ds1',
+  'Fs1',
+  'A1',
+  'C2',
+  'Ds2',
+  'Fs2',
+  'A2',
+  'C3',
+  'Ds3',
+  'Fs3',
+  'A3',
+  'C4',
+  'Ds4',
+  'Fs4',
+  'A4',
+  'C5',
+  'Ds5',
+  'Fs5',
+  'A5',
+  'C6',
+  'Ds6',
+  'Fs6',
+  'A6',
+  'C7',
+  'Ds7',
+  'Fs7',
+  'A7',
+  'C8'
+]
+
+/** A0 的音高，相对采样自己的基准音 C4。 */
+const SALAMANDER_FIRST_PITCH = -39
+
+/** 相邻两份录音差几个半音。 */
+const SALAMANDER_STEP = 3
+
+const SALAMANDER_ZONES: LibraryZone[] = SALAMANDER_FILES.map((name, index) => ({
+  pitch: SALAMANDER_FIRST_PITCH + index * SALAMANDER_STEP,
+  file: `salamander/${name}.mp3`
+}))
 
 /**
  * 库的分类树，也是侧边栏画的东西。
@@ -195,6 +278,14 @@ export const LIBRARY: LibraryCategory[] = [
         label: '',
         samples: [
           {
+            path: 'library://piano/salamander',
+            name: 'Salamander Grand',
+            // 不归一化：低音区和高音区本来就不是一样响的，把 30 段录音各自拉到同一
+            // 个峰值会把这个差别抹掉，而那正是钢琴的一部分。
+            level: 1,
+            zones: SALAMANDER_ZONES
+          },
+          {
             path: 'library://piano/concert',
             name: 'Concert Grand',
             // 比另外三个高一点：它的峰值是开头那一下三根弦同相的瞬间，之后靠拍打
@@ -234,41 +325,95 @@ const BY_PATH = new Map<string, LibrarySample>(
   ])
 )
 
-/** 合成好的缓冲，按路径缓存。 */
-const rendered = new Map<string, AudioBuffer>()
+/** 加载好的音域表，按路径缓存。 */
+const rendered = new Map<string, SampleZone[]>()
 
-/** 这个路径是不是一个内置采样。 */
+/** 这个路径是不是一个内置采样 —— 合成的和打包进来的都算。 */
 export function isLibraryPath(path: string): boolean {
   return path.startsWith(LIBRARY_SCHEME)
 }
 
+/** 一个内置采样，加载好之后的样子。 */
+export type LoadedLibrarySample = {
+  sample: LibrarySample
+  zones: SampleZone[]
+}
+
 /**
- * 取一个内置采样的 AudioBuffer，第一次用到时合成。
+ * 取一个内置采样，第一次用到时加载。
  *
- * 缓存不是优化而是必须的：一个采样可能被好几个通道用着，而每次点击都重新合成一段
- * 几秒钟的 PCM 会明显卡一下。
+ * 缓存不是优化而是必须的：一个采样可能被好几个通道用着，而每次点一下都重新合成几
+ * 秒钟的 PCM、或者重新读盘解码三十个文件，会明显卡一下。
+ *
+ * 两种来源在这里合流：往下走一步之后，「合成的」和「打包的」就没有区别了，都是一
+ * 张音域表。上层不必知道手里这个采样是从哪来的。
  *
  * 路径不在库里时返回 null —— 打开一份工程时这是「这个采样丢了」，不是崩溃的理由。
+ * 打包的采样一个文件都读不回来时也是 null，理由一样。
  */
-export function renderLibrarySample(
-  path: string
-): { sample: LibrarySample; buffer: AudioBuffer } | null {
+export async function loadLibrarySample(path: string): Promise<LoadedLibrarySample | null> {
   const sample = BY_PATH.get(path)
   if (sample === undefined) return null
 
   const cached = rendered.get(path)
-  if (cached !== undefined) return { sample, buffer: cached }
+  if (cached !== undefined) return { sample, zones: cached }
 
+  const zones = 'synth' in sample ? renderSynth(sample) : await renderBundled(sample)
+  if (zones === null) return null
+
+  rendered.set(path, zones)
+  return { sample, zones }
+}
+
+/**
+ * 合成的那个：算一遍就是结果。
+ *
+ * 只有一段音域，在 0 —— 也就是说每个音都靠变调到位，这正是它一直以来的行为。
+ */
+function renderSynth(sample: LibrarySample & SynthSource): SampleZone[] {
   const context = getAudioContext()
-  const data = sample.synth({ sampleRate: context.sampleRate, seed: pathSeed(path) })
+  const data = sample.synth({ sampleRate: context.sampleRate, seed: pathSeed(sample.path) })
   normalize(data, sample.level)
 
   const buffer = context.createBuffer(1, data.length, context.sampleRate)
   // `set` rather than `copyToChannel`: the two do the same thing, and this one
   // does not care which kind of backing buffer the array came out of.
   buffer.getChannelData(0).set(data)
-  rendered.set(path, buffer)
-  return { sample, buffer }
+  return [{ pitch: 0, buffer }]
+}
+
+/**
+ * 打包进来的那个：把清单上的文件读一遍、解一遍。
+ *
+ * 少一个文件不致命 —— 那一段音域空着，附近的音落到别的录音上，琴还是能弹。一个都
+ * 没读回来才算这个采样没了。
+ *
+ * 解码一起发出去，不排队：它们之间没有任何先后关系，串行等三十个文件的好几个来回
+ * 是白等的。
+ */
+async function renderBundled(sample: LibrarySample & FileSource): Promise<SampleZone[] | null> {
+  const files = await window.api.readBundledSamples(sample.zones.map((zone) => zone.file))
+  const dataByFile = new Map(files.map((file) => [file.path, file.data]))
+
+  const decoded = await Promise.all(
+    sample.zones.map(async (zone): Promise<SampleZone | null> => {
+      const data = dataByFile.get(zone.file)
+      if (data === undefined) return null
+      try {
+        const buffer = await decodeAudioData(toArrayBuffer(data))
+        // 不归一化：`normalize` 会把每段录音都拉到同一个峰值，而低音区和高音区本来
+        // 就不是一样响的。`level` 是库内部再拧一点的那一下，1 就是不动它。
+        if (sample.level !== 1) scaleBuffer(buffer, sample.level)
+        return { pitch: zone.pitch, buffer }
+      } catch {
+        // 读到了但解不开 —— 截断的文件，或者根本不是音频。按没读到算。
+        return null
+      }
+    })
+  )
+
+  const zones = decoded.filter((zone): zone is SampleZone => zone !== null)
+  return zones.length === 0 ? null : zones
 }
 
 // 合成工具
@@ -369,6 +514,21 @@ function normalize(data: Float32Array, level: number): void {
   const scale = level / peak
   for (let index = 0; index < data.length; index += 1) {
     data[index] *= scale
+  }
+}
+
+/**
+ * 整段乘一个增益。
+ *
+ * `level` 对合成采样是「归一化到哪」，对文件采样只能是这样乘一下 —— 录音的峰值不
+ * 是这里定的，也不该被这里改掉。
+ */
+function scaleBuffer(buffer: AudioBuffer, gain: number): void {
+  for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+    const data = buffer.getChannelData(channel)
+    for (let index = 0; index < data.length; index += 1) {
+      data[index] *= gain
+    }
   }
 }
 

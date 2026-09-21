@@ -33,6 +33,7 @@
 import { SimpleFilter, SoundTouch } from 'soundtouchjs'
 
 import type { Note } from '../types/note'
+import { voiceForPitch, type SampleZone } from '../types/sample'
 
 let audioContext: AudioContext | null = null
 
@@ -53,6 +54,17 @@ export async function resumeAudioContext(): Promise<void> {
   if (context.state !== 'running') {
     await context.resume()
   }
+}
+
+/**
+ * The bytes of a `Uint8Array` as a standalone `ArrayBuffer`.
+ *
+ * A `Uint8Array` is a window onto a buffer that may be larger than the view and
+ * may be shared, so handing `bytes.buffer` straight to `decodeAudioData` would
+ * hand it whatever else lives alongside. This copies the window out exactly.
+ */
+export function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
 }
 
 /**
@@ -408,6 +420,10 @@ export function gainForVelocity(velocity: number): number {
  * a piano key can audition the note it stands for without a note existing yet.
  * Auditioning is pitched the same way a note is, so the key and the note it
  * would draw sound alike.
+ *
+ * A caller holding a whole instrument resolves the zone itself and passes that
+ * zone's buffer with the shift left over — `voiceForPitch` gives both — rather
+ * than a buffer for the engine to pitch. This one sounds what it is handed.
  */
 export function triggerStrip(strip: ChannelStrip, buffer: AudioBuffer, pitch = 0): void {
   const context = getAudioContext()
@@ -430,13 +446,13 @@ export function triggerStrip(strip: ChannelStrip, buffer: AudioBuffer, pitch = 0
  */
 export function playNoteSequence(
   strip: ChannelStrip,
-  buffer: AudioBuffer,
+  zones: SampleZone[],
   notes: Note[],
   startAtSec: number,
   onFinished: () => void
 ): void {
   stopStrip(strip)
-  scheduleNoteSequence(strip, buffer, notes, startAtSec, onFinished)
+  scheduleNoteSequence(strip, zones, notes, startAtSec, onFinished)
 }
 
 /**
@@ -452,8 +468,13 @@ export function playNoteSequence(
  *
  * Note length is therefore audible: a short note chops the sample, a long one
  * lets it ring. Pitch is a semitone offset, sounded by a re-pitched copy of the
- * sample rather than by a playback rate, so it cannot affect that length;
- * velocity scales that voice's own gain.
+ * recording the note lands on rather than by a playback rate, so it cannot affect
+ * that length; velocity scales that voice's own gain.
+ *
+ * `zones` is the whole instrument, not one buffer, because which recording a note
+ * plays depends on the note: see `voiceForPitch`. A single-file sample is the
+ * one-zone case, and every note of it shifts by its own pitch — exactly what a
+ * single `buffer` used to do.
  *
  * `startAtSec` is an absolute `AudioContext.currentTime` value, so the caller can
  * derive a playhead from the very same number. `onFinished` is optional because
@@ -462,7 +483,7 @@ export function playNoteSequence(
  */
 export function scheduleNoteSequence(
   strip: ChannelStrip,
-  buffer: AudioBuffer,
+  zones: SampleZone[],
   notes: Note[],
   startAtSec: number,
   onFinished?: () => void
@@ -476,8 +497,13 @@ export function scheduleNoteSequence(
 
     const noteStart = startAtSec + note.startSec
 
+    // Which recording this note plays is the note's own business, not the
+    // channel's: a multisampled instrument covers the keyboard in zones, and two
+    // notes of the same channel can easily come from two different recordings.
+    const voice = voiceForPitch(zones, note.pitch)
+
     const source = context.createBufferSource()
-    source.buffer = pitchShiftedBuffer(buffer, note.pitch)
+    source.buffer = pitchShiftedBuffer(voice.buffer, voice.shift)
 
     // Velocity belongs to the note, so it needs a gain of its own: the strip's
     // gain is the channel's, and volume, mute and solo all write to that.
@@ -498,7 +524,8 @@ export function scheduleNoteSequence(
 /** One channel's notes, ready to be scheduled. */
 export type ScheduledChannel = {
   strip: ChannelStrip
-  buffer: AudioBuffer
+  /** The channel's whole instrument — see `scheduleNoteSequence`. */
+  zones: SampleZone[]
   notes: Note[]
 }
 
@@ -533,13 +560,7 @@ export function playArrangement(
   }
 
   for (const channel of audible) {
-    playNoteSequence(
-      channel.strip,
-      channel.buffer,
-      channel.notes,
-      startAtSec,
-      handleChannelFinished
-    )
+    playNoteSequence(channel.strip, channel.zones, channel.notes, startAtSec, handleChannelFinished)
   }
 }
 

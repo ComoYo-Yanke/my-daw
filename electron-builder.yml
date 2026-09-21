@@ -9,6 +9,9 @@ files:
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+# The sample pack that ships with the app is read by the main process at runtime,
+# so it has to be real files rather than entries inside the asar. Moving this
+# means moving `bundledSamplesDir()` in src/main/index.ts with it.
 asarUnpack:
   - resources/**
 win:

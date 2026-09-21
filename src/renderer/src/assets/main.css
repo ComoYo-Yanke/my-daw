@@ -1851,19 +1851,34 @@ body {
   color: #0f1224;
 }
 
-/* Three weights on one surface, painted back to front — the earliest layer is
-   the topmost, so a bar line wins over the beat line under it and the beat line
-   over the subdivision under that. The order of the three is the hierarchy: the
-   bar is the brightest, then the beat, then the subdivision faintest, so a bar
-   can be found without counting cells and a cell can be aimed at without the
-   bars shouting over it. */
+/* Four weights on one surface, painted back to front — the earliest layer is the
+   topmost, so a bar line wins over the half-bar under it, the half-bar over the
+   beat under that, and the beat over the subdivision.
+
+   The three lines that mark the bar's structure — a bar, its half, and its
+   quarter, which is one beat — are set an equal distance apart over the
+   background, and that evenness is the whole mechanism: which one a line is can
+   be read off the line itself instead of counted up from the nearest bar. Move
+   any one of them and the one below it has to move too, or the two close on each
+   other and stop reading as two — the beat line only holds its own as a level
+   while the half-bar stays clear of it.
+
+   Half a bar is a whole number of beats — four to the bar — so the half-bar line
+   lands exactly on a beat line rather than between two. It is still a layer of
+   its own: painted after the beat layer, it simply covers the line it shares a
+   pixel with, which is the whole point of it.
+
+   The subdivision is not a fourth step on that ladder but the floor under it. It
+   is the snap grid, so how fine it gets is the zoom's business, and it stays
+   quiet enough that a note can be aimed at over the top of it. */
 .pr-grid {
   position: relative;
   overflow: hidden;
   background-color: #191920;
   background-image:
-    repeating-linear-gradient(to right, #4a4a5e 0 1px, transparent 1px var(--pr-bar-w)),
-    repeating-linear-gradient(to right, #34343f 0 1px, transparent 1px var(--pr-beat-w)),
+    repeating-linear-gradient(to right, #616178 0 1px, transparent 1px var(--pr-bar-w)),
+    repeating-linear-gradient(to right, #4f4f62 0 1px, transparent 1px var(--pr-half-w)),
+    repeating-linear-gradient(to right, #3d3d4c 0 1px, transparent 1px var(--pr-beat-w)),
     repeating-linear-gradient(to right, #232330 0 1px, transparent 1px var(--pr-cell-w));
   cursor: crosshair;
   touch-action: none;
@@ -2025,6 +2040,36 @@ body {
   border-radius: 0 2px 2px 0;
   background: rgba(15, 18, 36, 0.5);
   cursor: ew-resize;
+}
+
+/* A note's name, drawn over the note rather than inside it.
+
+   Inside, it would inherit the note's own opacity — and that opacity is how hard
+   the note is played, so the quieter a note is, the less readable its name would
+   be, which is the wrong way round. A layer of its own keeps its contrast at any
+   velocity. Whether there is room for it at all is the component's call; see
+   `NOTE_LABEL_MIN_W`.
+
+   The letters sit on a chip rather than straight on the fill, because the fill
+   runs from a saturated colour at full velocity down to near the grid's own dark
+   at the bottom of the range. No single text colour is legible at both ends of
+   that; a backing is. It is only ever as wide as the name, so the rest of the
+   note still shows the channel's colour and how faded it is. */
+.pr-note-label {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  width: max-content;
+  overflow: hidden;
+  padding: 0 3px;
+  border-radius: 2px;
+  background: rgba(12, 14, 26, 0.68);
+  color: #e8eaf4;
+  font-size: 9px;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 /* The white line: where the transport is while it runs, and where it will start

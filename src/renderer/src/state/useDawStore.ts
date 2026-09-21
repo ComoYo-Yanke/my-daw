@@ -15,12 +15,14 @@ import {
   setStripPan,
   stopAllStrips,
   stopStrip,
+  toArrayBuffer,
   triggerStrip
 } from '../audio/engine'
 import type { ScheduledChannel } from '../audio/engine'
 import type { ExportVoice } from '../audio/export'
-import { isLibraryPath, renderLibrarySample } from '../audio/library'
+import { isLibraryPath, loadLibrarySample } from '../audio/library'
 import { computePeaks } from '../audio/peaks'
+import { singleZone, voiceForPitch, type SampleZone } from '../types/sample'
 import { parseProjectFile, serializeProject, type ProjectFile } from '../types/project'
 import {
   clampLengthBars,
@@ -68,7 +70,18 @@ export type Sample = {
   path: string
   /** Length in seconds, taken from the decoded AudioBuffer. */
   durationSec: number
-  /** Decoded PCM. Shared by every channel that plays this sample. */
+  /**
+   * What the keyboard plays. One entry for an ordinary sample, all of it shifted
+   * by the note's own pitch; one entry per recording for a multisampled
+   * instrument, where the note picks the nearest — see `voiceForPitch`.
+   *
+   * Shared by every channel that plays this sample, and never empty.
+   */
+  zones: SampleZone[]
+  /**
+   * The zone nearest the sample's own pitch, for the things that want *a*
+   * waveform rather than the right one: the thumbnail, and the duration above.
+   */
   buffer: AudioBuffer
   peaks: Float32Array
 }
@@ -702,14 +715,6 @@ export type DawState = {
   growPlaylist: () => void
 }
 
-/**
- * IPC hands the file over as a Uint8Array, which may be a view over a larger
- * buffer. decodeAudioData needs an ArrayBuffer covering exactly those bytes.
- */
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
-}
-
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
 }
@@ -1189,7 +1194,7 @@ export function selectExportPlan(state: DawState, bpm: number, tailSec: number):
     const sample = channel && state.samples.find((item) => item.id === channel.sampleId)
     if (!channel || !sample) continue
     voices.push({
-      buffer: sample.buffer,
+      zones: sample.zones,
       gain: audibleGain(channel, anySoloed),
       pan: channel.pan,
       notes: [...notes].sort((a, b) => a.startSec - b.startSec)
@@ -1315,15 +1320,26 @@ export const useDawStore = create<DawState>((set, get) => {
     })
   }
 
-  /** A decoded buffer and where it came from, as the pool stores it. */
-  const makeSample = (name: string, path: string, buffer: AudioBuffer): Sample => ({
-    id: crypto.randomUUID(),
-    name,
-    path,
-    durationSec: buffer.duration,
-    buffer,
-    peaks: computePeaks(buffer)
-  })
+  /**
+   * Some decoded audio and where it came from, as the pool stores it.
+   *
+   * Takes the zones rather than one buffer, because a sample may be a whole
+   * multisampled instrument. An ordinary file is the one-zone case — the caller
+   * wraps its buffer with `singleZone` — so the two are the same shape here.
+   */
+  const makeSample = (name: string, path: string, zones: SampleZone[]): Sample => {
+    // The reference recording: the one nearest the pitch the roll calls 0.
+    const reference = voiceForPitch(zones, 0).buffer
+    return {
+      id: crypto.randomUUID(),
+      name,
+      path,
+      durationSec: reference.duration,
+      zones,
+      buffer: reference,
+      peaks: computePeaks(reference)
+    }
+  }
 
   /**
    * Create a channel and its audio strip together, so they can never diverge.
@@ -1511,7 +1527,7 @@ export const useDawStore = create<DawState>((set, get) => {
             // as hard as a freshly drawn note.
             velocity: DEFAULT_VELOCITY
           }
-          scheduleNoteSequence(strip, sample.buffer, [note], atSec)
+          scheduleNoteSequence(strip, sample.zones, [note], atSec)
         }
 
         cursor.recent.push({ index, atSec })
@@ -1668,7 +1684,7 @@ export const useDawStore = create<DawState>((set, get) => {
       // A slice with nothing in it is still a slice: the reservation advances
       // either way, or the transport would stall on the first rest.
       if (inSlice.length > 0) {
-        scheduleNoteSequence(strip, sample.buffer, inSlice, loop.nextBarAtSec)
+        scheduleNoteSequence(strip, sample.zones, inSlice, loop.nextBarAtSec)
       }
 
       loop.recent.push({
@@ -1723,9 +1739,10 @@ export const useDawStore = create<DawState>((set, get) => {
   /**
    * Turn the paths a project recorded into decoded samples.
    *
-   * Two kinds of path, two ways back. `library://` ones are synthesised here and
-   * now, from the same function that made them in the first place. The rest are
-   * ordinary files, read by the main process and decoded as usual.
+   * Two kinds of path, two ways back. `library://` ones are built-ins: the
+   * synthesised ones are computed here and now, from the same function that made
+   * them in the first place, and the ones that ship as audio files are read and
+   * decoded. The rest are ordinary files, read by the main process as usual.
    *
    * A path that does not come back — file moved, file deleted, file unreadable —
    * is not a failure of the load. Its channel is still built, pointing at a
@@ -1742,11 +1759,11 @@ export const useDawStore = create<DawState>((set, get) => {
     )
 
     for (const path of paths.filter(isLibraryPath)) {
-      const built = renderLibrarySample(path)
-      // A path that looks like one of ours but is not in the library is just
-      // another missing sample.
+      const built = await loadLibrarySample(path)
+      // A path that looks like one of ours but is not in the library — or whose
+      // files will not come back — is just another missing sample.
       if (built === null) continue
-      const sample = makeSample(built.sample.name, path, built.buffer)
+      const sample = makeSample(built.sample.name, path, built.zones)
       samples.push(sample)
       sampleIdByPath.set(path, sample.id)
     }
@@ -1757,7 +1774,7 @@ export const useDawStore = create<DawState>((set, get) => {
       for (const file of files) {
         try {
           const buffer = await decodeAudioData(toArrayBuffer(file.data))
-          const sample = makeSample(file.name, file.path, buffer)
+          const sample = makeSample(file.name, file.path, singleZone(buffer))
           samples.push(sample)
           sampleIdByPath.set(file.path, sample.id)
         } catch {
@@ -1982,7 +1999,7 @@ export const useDawStore = create<DawState>((set, get) => {
           try {
             const buffer = await decodeAudioData(toArrayBuffer(file.data))
             const name = file.name.replace(/\.[^.]+$/, '')
-            const sample = makeSample(file.name, file.path, buffer)
+            const sample = makeSample(file.name, file.path, singleZone(buffer))
             importedSamples.push(sample)
             // Importing a sample puts it in the rack, like FL's channel rack.
             importedChannels.push(makeChannel(sample.id, name, taken + importedChannels.length))
@@ -2016,13 +2033,13 @@ export const useDawStore = create<DawState>((set, get) => {
      * It goes through the channel's own strip, so volume and pan already apply.
      */
     addLibrarySample: async (path) => {
-      const built = renderLibrarySample(path)
+      const built = await loadLibrarySample(path)
       if (built === null) {
         set({ error: `采样库里没有 ${path}` })
         return
       }
 
-      const sample = makeSample(built.sample.name, path, built.buffer)
+      const sample = makeSample(built.sample.name, path, built.zones)
       const taken = get().channels.length
 
       pushUndo(`library:${path}`)
@@ -2092,7 +2109,7 @@ export const useDawStore = create<DawState>((set, get) => {
 
         const buffer = await decodeAudioData(toArrayBuffer(file.data))
         const name = file.name.replace(/\.[^.]+$/, '')
-        const sample = makeSample(file.name, file.path, buffer)
+        const sample = makeSample(file.name, file.path, singleZone(buffer))
         const taken = get().channels.length
 
         // The path goes into the project as it is, exactly as an imported
@@ -2134,12 +2151,12 @@ export const useDawStore = create<DawState>((set, get) => {
       try {
         let sample: Sample
         if (isLibraryPath(path)) {
-          const built = renderLibrarySample(path)
+          const built = await loadLibrarySample(path)
           if (built === null) {
             set({ error: `采样库里没有 ${path}` })
             return
           }
-          sample = makeSample(built.sample.name, path, built.buffer)
+          sample = makeSample(built.sample.name, path, built.zones)
         } else {
           const files = await window.api.readSampleFiles([path])
           const file = files[0]
@@ -2148,7 +2165,7 @@ export const useDawStore = create<DawState>((set, get) => {
             return
           }
           const buffer = await decodeAudioData(toArrayBuffer(file.data))
-          sample = makeSample(file.name.replace(/\.[^.]+$/, ''), file.path, buffer)
+          sample = makeSample(file.name.replace(/\.[^.]+$/, ''), file.path, singleZone(buffer))
         }
 
         await installSampleOnChannel(channelId, sample)
@@ -2179,7 +2196,7 @@ export const useDawStore = create<DawState>((set, get) => {
         const buffer = await decodeAudioData(toArrayBuffer(file.data))
         await installSampleOnChannel(
           channelId,
-          makeSample(file.name.replace(/\.[^.]+$/, ''), file.path, buffer)
+          makeSample(file.name.replace(/\.[^.]+$/, ''), file.path, singleZone(buffer))
         )
       } catch (cause) {
         set({ error: `换音色失败：${errorMessage(cause)}` })
@@ -2846,6 +2863,10 @@ export const useDawStore = create<DawState>((set, get) => {
      * This is the piano keyboard's own preview: the same voice a note would use,
      * so it goes through the channel's volume, pan, mute and solo and is stopped
      * by the same cut as everything else on the strip.
+     *
+     * The zone is picked here rather than by the engine, because this is the one
+     * place that sounds a pitch with no note behind it — a multisampled
+     * instrument keys off the pitch, so it has to be picked before the call.
      */
     previewPitch: async (channelId, pitch) => {
       const state = get()
@@ -2855,7 +2876,8 @@ export const useDawStore = create<DawState>((set, get) => {
       if (!sample || !strip) return
 
       await resumeAudioContext()
-      triggerStrip(strip, sample.buffer, pitch)
+      const voice = voiceForPitch(sample.zones, pitch)
+      triggerStrip(strip, voice.buffer, voice.shift)
     },
 
     /**
@@ -2968,7 +2990,7 @@ export const useDawStore = create<DawState>((set, get) => {
         }
       })
 
-      playNoteSequence(strip, sample.buffer, notes, startAtSec, () => {
+      playNoteSequence(strip, sample.zones, notes, startAtSec, () => {
         // Guard against a stale callback from an earlier run of the same channel.
         set((state) => (state.playback?.channelId === channelId ? { playback: null } : {}))
       })
@@ -3156,7 +3178,7 @@ export const useDawStore = create<DawState>((set, get) => {
         if (!channel || !sample || !strip) continue
         scheduled.push({
           strip,
-          buffer: sample.buffer,
+          zones: sample.zones,
           notes: [...notes].sort((a, b) => a.startSec - b.startSec)
         })
         channelIds.push(channelId)

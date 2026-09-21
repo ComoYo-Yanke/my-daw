@@ -1,7 +1,14 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
-/** One file read from disk by the main process. */
+/**
+ * One file read by the main process.
+ *
+ * `path` is the file's identity as the renderer knows it, which is not always an
+ * absolute path: for the pack that ships with the app it is the path relative to
+ * that pack. It echoes back whatever was asked for, and that is what makes a
+ * single shape serve both.
+ */
 type SampleFilePayload = {
   path: string
   name: string
@@ -38,6 +45,15 @@ const api = {
    */
   readSampleFiles: (paths: string[]): Promise<SampleFilePayload[]> =>
     ipcRenderer.invoke('samples:read', paths),
+  /**
+   * Read files out of the sample pack that ships inside the app.
+   *
+   * The paths are relative to that pack and come back the same way, so the
+   * renderer never has to know where the app was installed. Used by the library's
+   * file-backed samples; the synthesised ones read nothing.
+   */
+  readBundledSamples: (paths: string[]): Promise<SampleFilePayload[]> =>
+    ipcRenderer.invoke('samples:read-bundled', paths),
   /**
    * Write a project. A null `path` opens the save dialog; a path writes straight
    * over that file. Resolves to null if the dialog was cancelled.

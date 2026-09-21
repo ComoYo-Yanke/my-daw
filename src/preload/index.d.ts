@@ -1,6 +1,12 @@
 import { ElectronAPI } from '@electron-toolkit/preload'
 
-/** One file read from disk by the main process, as received over IPC. */
+/**
+ * One file read by the main process, as received over IPC.
+ *
+ * `path` echoes back whatever was asked for, which is an absolute path for a file
+ * on disk and a path relative to the app's own sample pack for one that ships
+ * with it. See the matching note in src/preload/index.ts.
+ */
 export type SampleFilePayload = {
   path: string
   name: string
@@ -25,6 +31,7 @@ export type ScannedSample = {
 export type DawApi = {
   openSampleFiles: () => Promise<SampleFilePayload[]>
   readSampleFiles: (paths: string[]) => Promise<SampleFilePayload[]>
+  readBundledSamples: (paths: string[]) => Promise<SampleFilePayload[]>
   saveProject: (json: string, path: string | null) => Promise<{ path: string } | null>
   openProject: () => Promise<OpenedProject | null>
   readSettings: () => Promise<Record<string, unknown>>

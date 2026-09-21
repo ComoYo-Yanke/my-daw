@@ -22,6 +22,7 @@ import { Mp3Encoder } from '@breezystack/lamejs'
 
 import { gainForVelocity, pitchShiftedBuffer } from './engine'
 import type { Note } from '../types/note'
+import { voiceForPitch, type SampleZone } from '../types/sample'
 
 /** What an export is written as. */
 export type ExportFormat = 'wav' | 'mp3'
@@ -54,7 +55,8 @@ export type ExportSettings = RenderSettings & {
 
 /** One channel's part of the mix. */
 export type ExportVoice = {
-  buffer: AudioBuffer
+  /** The channel's whole instrument, zones and all — see `voiceForPitch`. */
+  zones: SampleZone[]
   /** The channel's own gain, with mute and solo already folded in. */
   gain: number
   /** -1 to 1. */
@@ -144,8 +146,12 @@ export async function renderMix(
     panner.connect(master)
 
     for (const note of notes) {
+      // Same pick the live engine makes, so an exported note lands on the same
+      // recording it played back on.
+      const picked = voiceForPitch(voice.zones, note.pitch)
+
       const source = offline.createBufferSource()
-      source.buffer = pitchShiftedBuffer(voice.buffer, note.pitch)
+      source.buffer = pitchShiftedBuffer(picked.buffer, picked.shift)
 
       const velocityGain = offline.createGain()
       velocityGain.gain.value = gainForVelocity(note.velocity)
@@ -169,29 +175,38 @@ export async function renderMix(
 }
 
 /**
- * Render every distinct (sample, pitch) pair the song needs, in chunks.
+ * Render every distinct (recording, shift) pair the song needs, in chunks.
  *
- * Pitch 0 is skipped: that is the sample itself, and `pitchShiftedBuffer` hands
- * it straight back without rendering anything.
+ * A shift of 0 is skipped: that is the recording itself, and `pitchShiftedBuffer`
+ * hands it straight back without rendering anything.
+ *
+ * The pair is what gets deduplicated rather than the note's pitch, because a
+ * note's pitch is only half of what decides which copy it needs — the zone it
+ * lands on is the other half. Notes an octave apart can want the same recording
+ * at the same shift, and notes a semitone apart can want two different ones.
  */
 async function warmPitchCache(
   voices: ExportVoice[],
   onProgress: (progress: ExportProgress) => void
 ): Promise<void> {
   const seen = new Map<AudioBuffer, Set<number>>()
-  const pending: { buffer: AudioBuffer; pitch: number }[] = []
+  const pending: { buffer: AudioBuffer; shift: number }[] = []
 
   for (const voice of voices) {
     for (const note of voice.notes) {
-      if (note.pitch === 0 || note.lengthSec <= 0) continue
-      let pitches = seen.get(voice.buffer)
-      if (!pitches) {
-        pitches = new Set()
-        seen.set(voice.buffer, pitches)
+      if (note.lengthSec <= 0) continue
+
+      const picked = voiceForPitch(voice.zones, note.pitch)
+      if (picked.shift === 0) continue
+
+      let shifts = seen.get(picked.buffer)
+      if (!shifts) {
+        shifts = new Set()
+        seen.set(picked.buffer, shifts)
       }
-      if (pitches.has(note.pitch)) continue
-      pitches.add(note.pitch)
-      pending.push({ buffer: voice.buffer, pitch: note.pitch })
+      if (shifts.has(picked.shift)) continue
+      shifts.add(picked.shift)
+      pending.push({ buffer: picked.buffer, shift: picked.shift })
     }
   }
 
@@ -202,7 +217,7 @@ async function warmPitchCache(
 
   pending.forEach((item, index) => {
     // The return value is not wanted; the point is the cache it leaves behind.
-    pitchShiftedBuffer(item.buffer, item.pitch)
+    pitchShiftedBuffer(item.buffer, item.shift)
     if (index % 8 === 7) onProgress({ stage: 'prepare', ratio: (index + 1) / pending.length })
   })
   onProgress({ stage: 'prepare', ratio: 1 })

@@ -130,6 +130,20 @@ const VELOCITY_LANE_PX = 64
 const VELOCITY_STEP = 10
 
 /**
+ * How big a note has to be before its name is drawn on it.
+ *
+ * Where the name fits rather than a taste: three characters of 9px text plus the
+ * chip's own padding, and tall enough for that text to have a line to sit on.
+ *
+ * Below either figure the name is dropped rather than shrunk or clipped. A note
+ * this small is read from where it sits against the keyboard gutter, and a
+ * clipped "C#" is a "C" — worse than an absent label, because it is wrong
+ * quietly.
+ */
+const NOTE_LABEL_MIN_W = 22
+const NOTE_LABEL_MIN_H = 11
+
+/**
  * How far a selecting drag has to travel before it draws its rectangle.
  *
  * Below this it is a click, and a click on empty grid with Shift held clears the
@@ -914,6 +928,9 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
     '--pr-grid-w': `${gridWidthPx}px`,
     '--pr-grid-h': `${gridHeightPx}px`,
     '--pr-cell-w': `${cellPx}px`,
+    // A half bar rather than half the beats: it is the middle of the bar that
+    // wants marking, and with four beats to the bar the two are the same line.
+    '--pr-half-w': `${barPx / 2}px`,
     '--pr-beat-w': `${barPx / BEATS_PER_BAR}px`,
     '--pr-bar-w': `${barPx}px`,
     '--pr-vel-h': `${VELOCITY_LANE_PX}px`
@@ -1189,6 +1206,37 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
                       title="拖动改变长度（选中多个时一起变）"
                       onPointerDown={(event) => handleHandlePointerDown(event, note)}
                     />
+                  </div>
+                )
+              })}
+
+              {/* The names, over the notes rather than in them.
+
+                  A layer of their own so that the note's velocity fade — which is
+                  the element's own opacity — does not dim them: a quiet note is
+                  drawn faded, and its name is the one thing there is to read off
+                  it. Drawn after the notes so every name sits on its note, and
+                  out of the pointer's way so grabbing a note by its name still
+                  moves the note. */}
+              {notes.map((note) => {
+                const rect = rectForNote(note)
+                const noteH = Math.max(3, keyPx - 1)
+                if (rect.width < NOTE_LABEL_MIN_W || noteH < NOTE_LABEL_MIN_H) return null
+                return (
+                  <div
+                    key={note.id}
+                    className="pr-note-label"
+                    aria-hidden="true"
+                    style={{
+                      left: `${rect.x}px`,
+                      top: `${rect.y}px`,
+                      // Only a cap: the chip is as wide as the name it holds, and
+                      // no wider than the note it is naming.
+                      maxWidth: `${rect.width}px`,
+                      height: `${noteH}px`
+                    }}
+                  >
+                    {noteName(note.pitch)}
                   </div>
                 )
               })}

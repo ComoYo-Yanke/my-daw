@@ -1,7 +1,7 @@
 import { app, shell, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
 import { readFile, readdir, writeFile } from 'fs/promises'
 import type { Dirent } from 'fs'
-import { basename, extname, join } from 'path'
+import { basename, extname, join, sep } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 
@@ -34,6 +34,51 @@ async function readFiles(paths: string[]): Promise<FilePayload[]> {
       files.push({ path, name: basename(path), data: await readFile(path) })
     } catch (error) {
       console.error(`[main] 读取文件失败 ${path}:`, error)
+    }
+  }
+  return files
+}
+
+/**
+ * Where the sample pack that ships with the app lives.
+ *
+ * Two layouts, because a packaged app is not the repo. In development the files
+ * are still where they were committed. Packaged, they sit *unpacked* beside the
+ * asar — which is what `asarUnpack: resources/**` in electron-builder.yml buys,
+ * and why this path has that extra segment in it.
+ */
+function bundledSamplesDir(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'app.asar.unpacked', 'resources', 'samples')
+    : join(app.getAppPath(), 'resources', 'samples')
+}
+
+/**
+ * Read files out of the bundled sample pack.
+ *
+ * The paths are relative to `resources/samples`, and they come back in `path`
+ * rather than the absolute path they were read from: inside the pack that
+ * relative path *is* the file's identity, and it is what the library's zone
+ * table is keyed by. An absolute path would be a different string in a dev run
+ * than in an install.
+ *
+ * A relative path that climbs out of the pack is refused rather than resolved.
+ * The renderer asks for these by name, and this is the process that decides what
+ * that name is allowed to reach.
+ */
+async function readBundledSamples(paths: string[]): Promise<FilePayload[]> {
+  const root = bundledSamplesDir()
+  const files: FilePayload[] = []
+  for (const path of paths) {
+    const full = join(root, path)
+    if (!full.startsWith(root + sep)) {
+      console.error(`[main] 内置采样路径越界 ${path}`)
+      continue
+    }
+    try {
+      files.push({ path, name: basename(path), data: await readFile(full) })
+    } catch (error) {
+      console.error(`[main] 读取内置采样失败 ${path}:`, error)
     }
   }
   return files
@@ -321,6 +366,9 @@ app.whenReady().then(() => {
   // Opening a project reloads the samples it names, which means reading files by
   // path — no dialog in the way.
   ipcMain.handle('samples:read', (_event, paths: string[]) => readFiles(paths))
+  // The sample pack that ships inside the app. The renderer names files relative
+  // to it, so it never has to know where the app was installed.
+  ipcMain.handle('samples:read-bundled', (_event, paths: string[]) => readBundledSamples(paths))
   ipcMain.handle('project:save', (_event, json: string, path: string | null) =>
     saveProject(json, path)
   )

@@ -60,7 +60,7 @@ npm run build:linux
 
 两套采样，都在「采样库」窗口里，上下排着。
 
-**内置库**（Drums / Guitar / Piano，共 18 个）是代码合成的，点一下就在机架上建一个通道并试听，不涉及任何文件。Drums 默认展开，其余收起。
+**内置库**（Drums / Guitar / Piano，共 19 个）点一下就在机架上建一个通道并试听。其中 18 个是代码合成的，不涉及任何文件；**Salamander Grand** 是真录音，30 个 mp3 放在 `resources/samples/salamander/`，按小三度一个音，所以每个音最多只变调 1 个半音（署名和许可证见该目录的 `CREDITS.md`，CC BY 3.0）。Drums 默认展开，其余收起。
 
 **自己的文件夹**：点「选择采样目录」，指向一个装着音频的文件夹。
 
@@ -199,7 +199,7 @@ Worth knowing:
 
 There are two sets, stacked in the 采样库 (sample library) window.
 
-**The built-in library** (Drums / Guitar / Piano, 18 sounds) is synthesised in code. Clicking one builds a channel on the rack and auditions it — no file involved. Drums starts expanded, the rest start collapsed.
+**The built-in library** (Drums / Guitar / Piano, 19 sounds) builds a channel on the rack and auditions it when clicked. 18 of them are synthesised in code, with no file involved. **Salamander Grand** is real recordings: 30 mp3s in `resources/samples/salamander/`, one every minor third, so no note is ever shifted by more than one semitone (see `CREDITS.md` in that folder for attribution — CC BY 3.0). Drums starts expanded, the rest start collapsed.
 
 **Your own folder**: click 选择采样目录 and point it at a folder of audio files.
 
