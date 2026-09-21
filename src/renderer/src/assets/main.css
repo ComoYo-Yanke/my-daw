@@ -282,6 +282,23 @@ body {
   cursor: default;
 }
 
+/* On, for the buttons that are switches: the library, and the three windows in
+   the pattern bar. Drawn as an outline rather than a fill so that it reads the
+   same on the plain buttons and on the accent-filled ones below, which set their
+   own colours over the top of this. */
+.toolbar__button[aria-pressed='true'] {
+  border-color: var(--daw-accent);
+  color: var(--daw-accent);
+}
+
+/* One size down, for the pattern bar: that strip is 24px tall, and the rows of
+   pattern tabs in it are the same height. */
+.toolbar__button--slim {
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 22px;
+}
+
 .toolbar__button--primary {
   border-color: transparent;
   background: var(--daw-accent);
@@ -491,36 +508,15 @@ body {
   color: var(--ev-c-text-3);
 }
 
-/* Pattern / Song switch */
+/* The three window buttons. Grouped — they are one row of switches — but as
+   separate buttons rather than a segmented control, because each one stands for
+   a window that can be open independently of the other two. */
 
-.mode-switch {
+.window-switch {
   display: flex;
   flex-shrink: 0;
-  padding: 2px;
-  border: 1px solid var(--daw-border);
-  border-radius: 999px;
-}
-
-.mode-switch__option {
-  padding: 0 12px;
-  border: none;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--ev-c-text-3);
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 20px;
-  cursor: pointer;
-}
-
-.mode-switch__option:hover {
-  color: var(--ev-c-text-1);
-}
-
-.mode-switch__option[aria-pressed='true'] {
-  background: var(--daw-accent);
-  color: #0f1224;
+  gap: 4px;
+  margin-right: 6px;
 }
 
 .pattern {
@@ -976,24 +972,41 @@ body {
 
 /* Step sequencer */
 
-.channel__steps-toggle {
-  flex-shrink: 0;
-  width: 18px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid var(--daw-border);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--ev-c-text-2);
-  font-family: inherit;
-  font-size: 9px;
-  line-height: 20px;
-  cursor: pointer;
+/* The window the grids live in: one row per channel, in rack order. The rows are
+   the rack's rows with the mixer strip left off — same height, same background,
+   and the same 132px for the name, so a grid sits in the same place in both
+   panels and the eye can run down either one. */
+.steps-rack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* As in the rack: the rows are as wide as their grids need, and `.content`
+     scrolls rather than the window squeezing a 32-step grid down. */
+  min-width: min-content;
 }
 
-.channel__steps-toggle:hover {
-  background: var(--ev-c-gray-3);
-  color: var(--ev-c-text-1);
+.steps-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: var(--daw-row);
+  min-width: min-content;
+}
+
+.steps-row:hover {
+  border-color: var(--daw-border);
+}
+
+.steps-row__name {
+  flex-shrink: 0;
+  width: 132px;
+  overflow: hidden;
+  font-size: 13px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .steps {

@@ -1,9 +1,7 @@
 import { useState } from 'react'
-import ChannelSteps from './ChannelSteps'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu'
 import Knob from './Knob'
 import SamplePicker from './SamplePicker'
-import StepCountSwitch from './StepCountSwitch'
 import WaveformThumbnail from './WaveformThumbnail'
 import { useStepCursor } from '../hooks/useStepCursor'
 import {
@@ -15,7 +13,6 @@ import {
   useDawStore
 } from '../state/useDawStore'
 import type { Channel, Playback, Sample } from '../state/useDawStore'
-import type { StepCount } from '../types/step'
 
 type ChannelRowProps = {
   channel: Channel
@@ -42,24 +39,23 @@ function formatPan(value: number): string {
   return 'C'
 }
 
-function formatSwing(value: number): string {
-  return `${Math.round(value)}%`
-}
-
 /**
  * One channel of the rack.
  *
  * The waveform is the play target and the name is the rename target on purpose:
  * if the name also played the sample, the first click of every double-click
  * would fire a note.
+ *
+ * The step grid is not here. It is the 步进 window's, and what this row keeps of
+ * it is the count in the metadata line — enough to see at a glance whether a
+ * channel has anything switched on, without the rack being as wide as the
+ * longest grid in it.
  */
 function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): React.JSX.Element {
   const triggerChannel = useDawStore((state) => state.triggerChannel)
   const renameChannel = useDawStore((state) => state.renameChannel)
   const setVolume = useDawStore((state) => state.setVolume)
   const setPan = useDawStore((state) => state.setPan)
-  const setSwing = useDawStore((state) => state.setSwing)
-  const setStepCount = useDawStore((state) => state.setStepCount)
   const toggleMute = useDawStore((state) => state.toggleMute)
   const toggleSolo = useDawStore((state) => state.toggleSolo)
   const duplicateChannel = useDawStore((state) => state.duplicateChannel)
@@ -71,18 +67,14 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
 
   /** Non-null while the name is being edited. */
   const [draft, setDraft] = useState<string | null>(null)
-  /**
-   * Whether this row's step grid is showing. Per row and purely visual, so it
-   * lives here rather than in the store — the steps themselves do not.
-   */
-  const [stepsOpen, setStepsOpen] = useState(true)
   /** Where the row's right-click menu is open, or null. */
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   /** Whether this row's sound picker is open. */
   const [picking, setPicking] = useState(false)
 
-  // Each row reads its own position: channels loop over their own step counts,
-  // so there is no single "current step" the rack could be handed from above.
+  // The grid is drawn in the 步进 window now, but the indicator is not a grid: a
+  // row still lights while its own loop is on a step that fires, and each row has
+  // to work that out for itself.
   const currentStep = useStepCursor(playback, channel.id)
 
   const commitRename = (): void => {
@@ -202,19 +194,6 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
           </span>
         </div>
 
-        {/* Sits against the waveform rather than at the row's end, so what it opens
-          is next to what it points at. */}
-        <button
-          type="button"
-          className="channel__steps-toggle"
-          aria-expanded={stepsOpen}
-          onClick={() => setStepsOpen((open) => !open)}
-          title={stepsOpen ? '收起步进网格' : '展开步进网格'}
-          aria-label={stepsOpen ? '收起步进网格' : '展开步进网格'}
-        >
-          {stepsOpen ? '▾' : '▸'}
-        </button>
-
         <button
           type="button"
           className="channel__wave"
@@ -287,32 +266,6 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
             <rect x="4.5" y="4.5" width="7" height="7" rx="1" fill="none" stroke="currentColor" />
           </svg>
         </button>
-
-        {stepsOpen && (
-          <>
-            <Knob
-              label="Swing"
-              value={channel.swing}
-              min={0}
-              max={100}
-              defaultValue={0}
-              format={formatSwing}
-              onChange={(value) => setSwing(channel.id, value)}
-            />
-            <ChannelSteps
-              channelId={channel.id}
-              steps={steps}
-              stepCount={channel.stepCount}
-              color={channel.color}
-              currentStep={currentStep}
-            />
-          </>
-        )}
-
-        <StepCountSwitch
-          value={channel.stepCount}
-          onChange={(stepCount: StepCount) => setStepCount(channel.id, stepCount)}
-        />
       </div>
 
       {/* Outside the row, so a right-click inside the menu does not bubble back

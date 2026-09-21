@@ -3,7 +3,7 @@ import { create } from 'zustand'
 export type WindowMode = 'docked' | 'floating'
 
 /** Every panel that can be a window. The set is closed: these are the panels. */
-export type WindowId = 'channel-rack' | 'piano-roll' | 'playlist' | 'sample-browser'
+export type WindowId = 'channel-rack' | 'piano-roll' | 'playlist' | 'sample-browser' | 'steps'
 
 /** A rectangle in viewport coordinates: the same space `getBoundingClientRect` uses. */
 export type Rect = { x: number; y: number; width: number; height: number }
@@ -81,9 +81,10 @@ const WORKSPACE_TOP_PX = 100
  * Where each window starts out.
  *
  * The rack and the timeline are open and stacked down the left, which is the
- * layout the app had before it grew windows; the piano roll and the library are
- * shut, since both are opened by doing something (double-clicking a channel,
- * pressing 采样库) and neither is useful before then.
+ * layout the app had before it grew windows; the piano roll, the library and the
+ * step sequencer are shut, since all three are opened by doing something
+ * (double-clicking a channel, pressing 采样库, pressing 步进) and none of them is
+ * useful before then.
  */
 const WINDOW_DEFS: WindowDef[] = [
   {
@@ -111,6 +112,19 @@ const WINDOW_DEFS: WindowDef[] = [
     // To the right of the rack, not down the side of it as it used to be.
     position: { x: 932, y: 16 },
     size: { width: 400, height: 480 },
+    closed: true
+  },
+  {
+    id: 'steps',
+    title: '步进',
+    mode: 'docked',
+    // The band under the rack, which is where the timeline is too: the workspace
+    // has no free space for a fifth panel, so the two share a place and this one
+    // lands on top of the other when it is opened. A step grid wants the width —
+    // 32 cells and a name per row is over a thousand pixels — and it is a panel
+    // that is pulled up, worked in and put away.
+    position: { x: 16, y: 372 },
+    size: { width: 1040, height: 300 },
     closed: true
   },
   {
@@ -199,7 +213,8 @@ export const LAYOUT_PRESETS: LayoutPreset[] = [
       'channel-rack': { x: 0, y: 0, width: 0.62, height: 0.48, open: true },
       playlist: { x: 0, y: 0.48, width: 0.62, height: 0.52, open: true },
       'sample-browser': { x: 0.62, y: 0, width: 0.38, height: 1, open: false },
-      'piano-roll': { x: 0.62, y: 0, width: 0.38, height: 1, open: false }
+      'piano-roll': { x: 0.62, y: 0, width: 0.38, height: 1, open: false },
+      steps: { x: 0, y: 0.48, width: 1, height: 0.52, open: false }
     }
   },
   {
@@ -210,7 +225,8 @@ export const LAYOUT_PRESETS: LayoutPreset[] = [
       'channel-rack': { x: 0, y: 0, width: 1, height: 0.34, open: true },
       'piano-roll': { x: 0, y: 0.34, width: 1, height: 0.66, open: true },
       playlist: { x: 0, y: 0.34, width: 1, height: 0.66, open: false },
-      'sample-browser': { x: 0.62, y: 0, width: 0.38, height: 1, open: false }
+      'sample-browser': { x: 0.62, y: 0, width: 0.38, height: 1, open: false },
+      steps: { x: 0, y: 0.34, width: 1, height: 0.66, open: false }
     }
   },
   {
@@ -221,7 +237,8 @@ export const LAYOUT_PRESETS: LayoutPreset[] = [
       'channel-rack': { x: 0, y: 0, width: 0.58, height: 1, open: true },
       'sample-browser': { x: 0.58, y: 0, width: 0.42, height: 1, open: true },
       playlist: { x: 0, y: 0.5, width: 1, height: 0.5, open: false },
-      'piano-roll': { x: 0, y: 0.34, width: 1, height: 0.66, open: false }
+      'piano-roll': { x: 0, y: 0.34, width: 1, height: 0.66, open: false },
+      steps: { x: 0, y: 0.5, width: 1, height: 0.5, open: false }
     }
   }
 ]
@@ -534,6 +551,18 @@ type WindowStore = {
   workArea: Rect
   /** The highest focus counter handed out. */
   topZ: number
+  /**
+   * Which window the mouse was last pressed inside, or null before any has been.
+   *
+   * Not derivable from the stack: `selectWindowZ` sorts pinned windows above
+   * unpinned ones, so the z order answers "which is in front" and not "which was
+   * pointed at last". This is what the transport keys go by, which is the only
+   * reason it is state rather than something worked out at the moment of asking.
+   *
+   * Not written to storage either. The layout is worth remembering; where the
+   * pointer happened to be last time is not.
+   */
+  focusedId: WindowId | null
 
   openWindow: (id: WindowId) => void
   closeWindow: (id: WindowId) => void
@@ -562,6 +591,10 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
   // "bring it forward", and a stale counter would make the first press on it
   // look like a move.
   topZ: initialWindows.reduce((top, win) => Math.max(top, win.zIndex), WINDOW_DEFS.length),
+  // Nothing has been pointed at yet, so no window owns the keyboard. Left null
+  // rather than seeded with the frontmost window, because "nobody has asked" is
+  // a different answer from "this one is in front".
+  focusedId: null,
 
   /** Opening also brings forward: a panel that opens behind another is no use. */
   openWindow: (id) => {
@@ -573,7 +606,10 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
         minimized: false,
         zIndex: state.topZ + 1
       })),
-      topZ: state.topZ + 1
+      topZ: state.topZ + 1,
+      // Asking for a window is asking to work in it, so the transport keys
+      // follow it there even though no press landed inside it yet.
+      focusedId: id
     })
     persistWindowLayout()
   },
@@ -605,20 +641,36 @@ export const useWindowStore = create<WindowStore>((set, get) => ({
   },
 
   /**
-   * Bring a window to the front.
+   * Bring a window to the front, and make it the one the keyboard plays to.
    *
    * Fires from a capture-phase press on anything inside a window, so it is the
    * hottest action here and the one that has to be cheapest: a window that is
-   * already the most recently focused one is left exactly as it is, and no state
-   * is written at all. Only moving between windows costs anything.
+   * already in front *and* already the focused one is left exactly as it is, and
+   * no state is written at all.
+   *
+   * The two are tracked separately because they diverge constantly — pressing
+   * inside the window that is already in front is the common case, and it is the
+   * one the z order cannot express.
    */
   focusWindow: (id) => {
     const state = get()
     const win = state.windows.find((item) => item.id === id)
-    if (win === undefined || win.zIndex === state.topZ) return
+    if (win === undefined) return
+
+    const bringing = win.zIndex !== state.topZ
+    if (!bringing && state.focusedId === id) return
+
     set({
-      windows: patchWindow(state.windows, id, (item) => ({ ...item, zIndex: state.topZ + 1 })),
-      topZ: state.topZ + 1
+      focusedId: id,
+      ...(bringing
+        ? {
+            windows: patchWindow(state.windows, id, (item) => ({
+              ...item,
+              zIndex: state.topZ + 1
+            })),
+            topZ: state.topZ + 1
+          }
+        : {})
     })
   },
 

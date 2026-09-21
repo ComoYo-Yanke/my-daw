@@ -33,8 +33,7 @@ import {
   type DawState,
   type Pattern,
   type PlaylistClip,
-  type PlaylistTrack,
-  type PlayMode
+  type PlaylistTrack
 } from '../state/useDawStore'
 
 /** 文件头的标识。用来认出「这是个 .mydaw」，以及挡住误打开的文件。 */
@@ -54,6 +53,10 @@ export const PROJECT_FORMAT = 'mydaw'
  * 没有哪个字段换了形状，新字段都走逐字段兜底。代价说清楚——用这一版存出来的文件，被
  * 更老的版本打开时，片段会被四舍五入回整小节、播放起点会被丢掉，属于「能打开但缺东西」，
  * 而不是打不开。
+ *
+ * 删字段同样没动版本号。`playMode`（Pattern / Song 那个开关）不存在了：空格播什么由
+ * 鼠标所在的窗口决定，没有东西可切换。老文件里多出来的这个字段读的时候被忽略，所以
+ * 老工程照常打开；反过来的代价和上面一样——老版本打开新文件时会回落成 `'pattern'`。
  */
 export const PROJECT_VERSION = 2
 
@@ -82,7 +85,6 @@ export type ProjectFile = {
   bpm: number
   timeSignature: string
   currentPatternId: string
-  playMode: PlayMode
   channels: ProjectChannel[]
   patterns: Pattern[]
   /** 时间线的轨道。裁剪、静音、独奏都挂在这里，所以要存。 */
@@ -131,7 +133,6 @@ export function serializeProject(state: DawState): ProjectFile {
     bpm: state.bpm,
     timeSignature: DEFAULT_TIME_SIGNATURE,
     currentPatternId: state.currentPatternId,
-    playMode: state.playMode,
     channels: state.channels.map((channel) => ({
       id: channel.id,
       name: channel.name,
@@ -203,7 +204,6 @@ export function parseProjectFile(text: string): ParseResult {
       bpm: num(raw.bpm, DEFAULT_BPM),
       timeSignature: str(raw.timeSignature, DEFAULT_TIME_SIGNATURE),
       currentPatternId: currentPattern.id,
-      playMode: raw.playMode === 'song' ? 'song' : 'pattern',
       channels,
       patterns,
       playlistTracks: tracks,

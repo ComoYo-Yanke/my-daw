@@ -7,8 +7,12 @@
 //
 // Graph, per channel:
 //
-//   AudioBufferSourceNode -> GainNode -> GainNode -> StereoPannerNode -> destination
-//        (per voice)      (per voice)   (per channel, persistent)
+//   source -> GainNode -> GainNode -> StereoPannerNode -> masterGain -> destination
+//  (per voice) (velocity) (per channel, persistent)     (once, app-wide)
+//
+// The master gain is the app's own output level rather than a channel's: it sits
+// after every strip, so turning it down turns everything down together and leaves
+// each channel's own volume, pan and mute exactly where they were.
 //
 // The channel's gain and panner outlive individual voices on purpose: a
 // channel's volume, pan, mute and solo must be audible *immediately*, including
@@ -89,6 +93,16 @@ export type ChannelStrip = {
 const strips = new Map<string, ChannelStrip>()
 
 /**
+ * The app's output level, applied to everything at once.
+ *
+ * Built on first use and then kept, because the context is created lazily on a
+ * user gesture. This is the one node that belongs to the application rather than
+ * to a channel or a project, so nothing ever rebuilds or reconnects it: strips
+ * come and go with the rack, and this outlives all of them.
+ */
+let masterGain: GainNode | null = null
+
+/**
  * Time constant for parameter changes, in seconds. Small enough to feel
  * instant, large enough that jumps in gain or pan do not click.
  */
@@ -106,7 +120,7 @@ export function createStrip(
   gain.gain.value = 0
   panner.pan.value = 0
   gain.connect(panner)
-  panner.connect(context.destination)
+  panner.connect(getMasterGain())
 
   const strip: ChannelStrip = { gain, panner, voices: new Set(), onActiveChange }
   strips.set(channelId, strip)
@@ -129,6 +143,34 @@ export function setStripPan(strip: ChannelStrip, value: number): void {
   const now = getAudioContext().currentTime
   strip.panner.pan.cancelScheduledValues(now)
   strip.panner.pan.setTargetAtTime(value, now, RAMP_SEC)
+}
+
+/** The master output every channel ends at. Built on first use. */
+export function getMasterGain(): GainNode {
+  if (!masterGain) {
+    const context = getAudioContext()
+    const node = context.createGain()
+    // Unity until somebody asks for less: an untouched app is not attenuated.
+    node.gain.value = 1
+    node.connect(context.destination)
+    masterGain = node
+  }
+  return masterGain
+}
+
+/**
+ * Ramp the master output, 0 (silent) to 1 (unity).
+ *
+ * One ramp for the whole app rather than one per channel, so a drag of the
+ * master knob is a single scheduled change — and so a channel that starts
+ * sounding mid-drag arrives at the level the knob is at, not at the one it was
+ * at when the drag began.
+ */
+export function setMasterGain(value: number): void {
+  const now = getAudioContext().currentTime
+  const gain = getMasterGain().gain
+  gain.cancelScheduledValues(now)
+  gain.setTargetAtTime(value, now, RAMP_SEC)
 }
 
 /**

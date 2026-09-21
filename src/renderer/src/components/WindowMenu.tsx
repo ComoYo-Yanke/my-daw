@@ -49,6 +49,7 @@ function WindowMenu(): React.JSX.Element {
   const rollOpen = useOpen('piano-roll')
   const listOpen = useOpen('playlist')
   const libraryOpen = useOpen('sample-browser')
+  const stepsOpen = useOpen('steps')
 
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -144,6 +145,13 @@ function WindowMenu(): React.JSX.Element {
       open: libraryOpen,
       disabled: false,
       run: () => toggleWindow('sample-browser')
+    },
+    {
+      id: 'steps',
+      label: windowTitle('steps'),
+      open: stepsOpen,
+      disabled: false,
+      run: () => toggleWindow('steps')
     }
   ]
 

@@ -72,6 +72,17 @@ npm run build:linux
 - **建议放 one-shot，不要放 loop**。这是采样器不是切片器，一个循环素材会被整段塞进一个音符里。
 - 哪里下素材：Freesound（筛选 CC0）、MusicRadar SampleRadar、GitHub 上的 `pumodi/open-samples`。注意 **CC0 ≠ 所有 CC**：CC-BY 要署名，CC-NC 不能商用。
 
+### 步进
+
+每个通道的步进网格在**「步进」窗口**里：pattern 栏左边的「步进」按钮，或者「窗口」菜单。一行一个通道，左边是名字，然后是 Swing、网格、步数。
+
+- 通道行里不再画网格，只留一个 `· N 步进` 的计数 —— 够看出这个通道有没有东西亮着，又不会让机架被最长的网格撑宽。
+- 点格子还是同一个开关：亮着就在循环走到它的时候发声。网格是**编 Pattern** 的东西，和通道的音量 / 声像 / 静音分开了。
+- 步数开关决定**循环多少步**，不删格子：切回 32 步，原来亮着的还在。
+- 步进窗没有自己的播放按钮。走带还是顶栏的「▶ 播放步进」，或者在这个窗口里点一下再按空格。
+
+**总音量**（顶栏「停止」左边）管整个软件的实时输出，接在每个通道后面，所以拧它不会动任何一个通道的音量、声像、静音和 solo。它**不进工程文件、也不影响导出**：把总音量拧到 40% 保存，重开是 100%；拧到 40% 导出的文件和 100% 时一样。要改一首歌里某个东西的音量，用通道自己的音量旋钮。
+
 ### 导出
 
 工具栏「导出音频」。范围**固定是整首 Song**，没有「只导当前 Pattern」这个选项。
@@ -82,7 +93,7 @@ npm run build:linux
 
 - 用的是和播放**同一套时间线展开逻辑**。软件里怎么响，导出就怎么渲染——不是两条各写一遍的路径。
 - 包含每个通道当前的音量、声像、静音、solo，以及 Playlist 上轨道的静音 / solo。
-- **只渲染钢琴卷帘里的音符**。Song 模式下步进网格本来就不发声，导出也不包含它。这不是导出层的取舍，是播放本身的行为。
+- **只渲染钢琴卷帘里的音符**。放到时间线上的 Pattern 只按它的音符发声，步进网格不参与，导出也不包含它。这不是导出层的取舍，是播放本身的行为。
 - 时长 = Song 总长度 + 尾部留白。
 
 几个坑：
@@ -105,18 +116,30 @@ npm run build:linux
 
 ## 快捷键
 
-| 键          | 作用                                                                |
-| ----------- | ------------------------------------------------------------------- |
-| `Space`     | 播放 / 停止。开着钢琴卷帘就播卷帘，Song 模式播 Song，否则播步进循环 |
-| `Ctrl+Z`    | 撤销                                                                |
-| `Ctrl+S`    | 保存                                                                |
-| `Ctrl+O`    | 打开                                                                |
-| `Ctrl+滚轮` | 钢琴卷帘 / Song 窗口里横向缩放                                      |
-| `Ctrl+A`    | 钢琴卷帘里全选音符                                                  |
-| `Ctrl+拖动` | Song 窗口里拖动片段 = 复制                                          |
-| `F12`       | 开发者工具                                                          |
+| 键          | 作用                                                  |
+| ----------- | ----------------------------------------------------- |
+| `Space`     | 播放 / 停止。作用在**鼠标最后点过的那个窗口**上，见下 |
+| `Ctrl+Z`    | 撤销                                                  |
+| `Ctrl+S`    | 保存                                                  |
+| `Ctrl+O`    | 打开                                                  |
+| `Ctrl+滚轮` | 钢琴卷帘 / Song 窗口里横向缩放                        |
+| `Ctrl+A`    | 钢琴卷帘里全选音符                                    |
+| `Ctrl+拖动` | Song 窗口里拖动片段 = 复制                            |
+| `F12`       | 开发者工具                                            |
 
 没有应用菜单栏，按 Alt 不会弹出任何东西。
+
+空格作用于**鼠标最后点过的那个窗口**：在窗口里按一下（点哪儿都算）就把空格交给它，鼠标只是悬停不算，点工具栏上的按钮也不算（工具栏不属于任何窗口）。
+
+| 最后点过的窗口 | 空格                       |
+| -------------- | -------------------------- |
+| 步进           | 播 / 停步进循环            |
+| Song           | 播 / 停整首 Song           |
+| 钢琴卷帘       | 播 / 停那个通道的卷帘      |
+| 机架、采样库   | 不反应：这两个窗口没有走带 |
+| 还没点过窗口   | 播 Song                    |
+
+播放中按空格永远是「停」，不管刚才是哪个窗口。钢琴卷帘没绑通道、或者那个通道一个音符都没有时，空格也不反应。
 
 ---
 
@@ -188,6 +211,17 @@ There are two sets, stacked in the 采样库 (sample library) window.
 - **Use one-shots, not loops.** This is a sampler, not a slicer — a loop dropped on a note plays its whole length.
 - Where to get material: Freesound (filter to CC0), MusicRadar SampleRadar, `pumodi/open-samples` on GitHub. Note that **CC0 is not all of CC**: CC-BY needs attribution, CC-NC forbids commercial use.
 
+### Steps
+
+Every channel's step grid lives in the **步进 window** — the 步进 button at the left of the pattern bar, or the 窗口 menu. One row per channel: name, then Swing, grid and step count.
+
+- Channel rows no longer draw the grid, only a `· N 步进` count — enough to see whether a channel has anything switched on, without the rack being stretched as wide as its longest grid.
+- A cell is still the same switch: lit means it fires when the loop reaches it. The grid is what a Pattern is _written_ with, and it is now separate from the volume, pan and mute it is _heard_ through.
+- The step count decides **how much of the loop plays**, not how much is kept: switching back up to 32 finds the steps that were there.
+- The window has no play button of its own. The transport is still ▶ 播放步进 in the toolbar, or press inside the window and use `Space`.
+
+**总音量** (left of 停止 in the toolbar) sets the output level of the whole app. It sits after every channel, so turning it down touches no channel's volume, pan, mute or solo. It is **not saved in the project and does not affect an export**: save with it at 40% and it reopens at 100%, and a file exported at 40% is identical to one exported at 100%. To change how loud something in the song is, use that channel's own volume.
+
 ### Exporting
 
 导出音频 in the toolbar. The range is **always the whole Song** — there is no "current Pattern only".
@@ -198,7 +232,7 @@ How the render works:
 
 - It uses **the same timeline flattening the transport uses**. What you hear in the app is what gets written — not two code paths that have to be kept in step by hand.
 - Every channel's current volume, pan, mute and solo is applied, along with the Playlist tracks' mute / solo.
-- **Only piano-roll notes are rendered.** In Song mode the step grid never sounds, so the export does not include it either. That is the playback behaviour, not a choice the exporter makes.
+- **Only piano-roll notes are rendered.** A Pattern placed on the timeline sounds its notes and nothing else — the step grid takes no part — so the export does not include it either. That is the playback behaviour, not a choice the exporter makes.
 - Duration = the Song's total length plus the tail.
 
 Things that bite:
@@ -221,15 +255,27 @@ Things that bite:
 
 ## Keyboard
 
-| Key          | Action                                                                                                 |
-| ------------ | ------------------------------------------------------------------------------------------------------ |
-| `Space`      | Play / stop. Plays the open piano roll if there is one, the Song in song mode, the step loop otherwise |
-| `Ctrl+Z`     | Undo                                                                                                   |
-| `Ctrl+S`     | Save                                                                                                   |
-| `Ctrl+O`     | Open                                                                                                   |
-| `Ctrl+wheel` | Horizontal zoom in the piano roll and the Song window                                                  |
-| `Ctrl+A`     | Select all notes (piano roll)                                                                          |
-| `Ctrl+drag`  | Copy clips (Song window)                                                                               |
-| `F12`        | DevTools                                                                                               |
+| Key          | Action                                                                  |
+| ------------ | ----------------------------------------------------------------------- |
+| `Space`      | Play / stop, aimed at the window the mouse was last used in — see below |
+| `Ctrl+Z`     | Undo                                                                    |
+| `Ctrl+S`     | Save                                                                    |
+| `Ctrl+O`     | Open                                                                    |
+| `Ctrl+wheel` | Horizontal zoom in the piano roll and the Song window                   |
+| `Ctrl+A`     | Select all notes (piano roll)                                           |
+| `Ctrl+drag`  | Copy clips (Song window)                                                |
+| `F12`        | DevTools                                                                |
+
+`Space` plays the window the mouse was **last used in**: press anywhere inside a window and `Space` is that window's. Hovering does not count, and neither does a toolbar button — the toolbar belongs to no window.
+
+| Last window used     | `Space`                          |
+| -------------------- | -------------------------------- |
+| 步进                 | Play / stop the step loop        |
+| Song                 | Play / stop the whole song       |
+| Piano roll           | Play / stop that channel's roll  |
+| Rack, sample library | Nothing: neither has a transport |
+| No window yet        | Play the Song                    |
+
+While something is playing, `Space` always means stop, whichever window was last used. The piano roll does not react either when it is bound to no channel or that channel has no notes.
 
 There is no application menu bar; pressing Alt brings up nothing.

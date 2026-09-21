@@ -10,6 +10,7 @@ import {
   releaseStrip,
   resumeAudioContext,
   scheduleNoteSequence,
+  setMasterGain,
   setStripGain,
   setStripPan,
   stopAllStrips,
@@ -209,9 +210,6 @@ export type ClipOrigin = {
   trackId: string
 }
 
-/** Which view the project is in, and which one the transport plays. */
-export type PlayMode = 'pattern' | 'song'
-
 /**
  * What a drag on the piano roll's empty grid does.
  *
@@ -229,18 +227,19 @@ export type PianoRollTool = 'draw' | 'select'
  * it runs out; the step loop has no end and runs until it is stopped, so it keeps
  * reserving its own next pass instead of reporting a finish.
  *
- * `piano-roll` is `pattern` with a clock of its own: it reserves the pattern bar
- * by bar so the tempo and the notes can be read fresh as it goes, and it can wrap
- * round to the top instead of ending. That is also why it needs a mode of its own
- * — its position is not `currentTime - startedAtSec`, it is where the reservation
- * says the clock is.
+ * `pattern` is one channel's notes, started by pressing that channel's waveform;
+ * `song` is the whole arrangement. `piano-roll` is `pattern` with a clock of its
+ * own: it reserves the pattern bar by bar so the tempo and the notes can be read
+ * fresh as it goes, and it can wrap round to the top instead of ending. That is
+ * also why it needs a mode of its own — its position is not
+ * `currentTime - startedAtSec`, it is where the reservation says the clock is.
  */
-export type PlaybackMode = PlayMode | 'steps' | 'piano-roll'
+export type PlaybackMode = 'pattern' | 'song' | 'steps' | 'piano-roll'
 
 /** What the transport is playing right now. */
 export type Playback = {
   mode: PlaybackMode
-  /** Pattern mode only: the channel whose sequence is running. */
+  /** The channel sequence only: the channel whose notes are running. */
   channelId: string | null
   /**
    * The channels this playback put voices on, so stopping cuts exactly those and
@@ -383,8 +382,6 @@ export type DawState = {
   playlistSnapEnabled: boolean
   /** The grid a dragged clip lands on, in bars. */
   playlistSnapDivision: PlaylistSnapDivision
-  /** Which view is showing, and what the transport plays. */
-  playMode: PlayMode
 
   /** Channel whose Piano Roll panel is open, or null when the panel is closed. */
   pianoRollChannelId: string | null
@@ -419,10 +416,24 @@ export type DawState = {
    * `startedAtSec` and `AudioContext.currentTime`, never counted up.
    */
   playback: Playback | null
+  /**
+   * How loud the app itself is, 0 to 1. A linear amplitude, not decibels.
+   *
+   * The output level of the whole application rather than of anything in it: it
+   * is applied after every channel, so it turns the mix down without touching a
+   * single channel's volume, pan or mute. 1 is unity, which is why it starts
+   * there — an app nobody has asked to turn down is not attenuated.
+   *
+   * Deliberately outside the project: it says how loud this machine is, not how
+   * loud the song is, so it is neither saved nor rendered into an export.
+   */
+  masterVolume: number
   /** Project tempo, in beats per minute. Everything timed follows it. */
   bpm: number
 
   setBpm: (bpm: number) => void
+  /** Turn the app's own output down, or back up. Not an undo step: no edit. */
+  setMasterVolume: (value: number) => void
   /** Take back the last edit, across every kind of edit the store has. */
   undo: () => void
   importSamples: () => Promise<void>
@@ -603,7 +614,6 @@ export type DawState = {
   playSong: () => Promise<void>
   stopSequence: () => void
 
-  setPlayMode: (mode: PlayMode) => void
   /**
    * Move where the song transport starts.
    *
@@ -1847,7 +1857,6 @@ export const useDawStore = create<DawState>((set, get) => {
     // one switch could not serve both.
     playlistSnapEnabled: true,
     playlistSnapDivision: DEFAULT_PLAYLIST_SNAP,
-    playMode: 'pattern',
     pianoRollChannelId: null,
     loopEnabled: false,
     pianoRollStartSec: 0,
@@ -1855,6 +1864,7 @@ export const useDawStore = create<DawState>((set, get) => {
     gridDivision: DEFAULT_GRID_DIVISION,
     pianoRollTool: 'draw',
     playback: null,
+    masterVolume: 1,
     bpm: DEFAULT_BPM,
 
     /**
@@ -1893,6 +1903,19 @@ export const useDawStore = create<DawState>((set, get) => {
           )
         }))
       }))
+    },
+
+    /**
+     * Turn the app's own output down, or back up.
+     *
+     * Applied to the node rather than kept in the store to be read at the next
+     * trigger: it is a level the whole mix passes through, so it takes effect on
+     * the voices that are already sounding, and no channel has to be told.
+     */
+    setMasterVolume: (value) => {
+      const next = clamp(value, 0, 1)
+      setMasterGain(next)
+      set({ masterVolume: next })
     },
 
     /**
@@ -2336,7 +2359,6 @@ export const useDawStore = create<DawState>((set, get) => {
         playlistTracks: makeDefaultTracks(),
         playlistBars: MIN_PLAYLIST_BARS,
         songStartBar: 0,
-        playMode: 'pattern',
         pianoRollChannelId: null,
         playback: null,
         bpm: DEFAULT_BPM,
@@ -2402,7 +2424,6 @@ export const useDawStore = create<DawState>((set, get) => {
         playlistTracks: parsed.project.playlistTracks,
         playlistBars: parsed.project.playlistBars,
         songStartBar: parsed.project.songStartBar,
-        playMode: parsed.project.playMode,
         playingChannelIds: [],
         pianoRollChannelId: null,
         playback: null,
@@ -3158,22 +3179,6 @@ export const useDawStore = create<DawState>((set, get) => {
         if (strip) stopStrip(strip)
       }
       set({ playback: null })
-    },
-
-    /**
-     * Switch between editing one pattern and arranging them.
-     *
-     * Voices already scheduled belong to the mode they were started in, so the
-     * transport stops rather than running on under the other view.
-     */
-    setPlayMode: (mode) => {
-      if (mode === get().playMode) return
-      get().stopSequence()
-      set({ playMode: mode })
-      // Arranging is what the timeline is for, so switching to song mode brings
-      // it up. One way only: closing the window does not switch back, because
-      // the transport keys still have to know which of the two views is meant.
-      if (mode === 'song') useWindowStore.getState().openWindow('playlist')
     },
 
     /**

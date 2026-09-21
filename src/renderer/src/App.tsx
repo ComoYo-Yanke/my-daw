@@ -4,14 +4,21 @@ import ChannelRow from './components/ChannelRow'
 import DawWindow from './components/DawWindow'
 import ExportDialog from './components/ExportDialog'
 import FileMenu from './components/FileMenu'
+import Knob from './components/Knob'
 import PatternBar from './components/PatternBar'
 import PianoRoll from './components/PianoRoll'
 import Playlist from './components/Playlist'
 import SampleBrowser from './components/SampleBrowser'
+import StepsWindow from './components/StepsWindow'
 import Toast from './components/Toast'
 import WindowMenu from './components/WindowMenu'
 import { selectNotes, useDawStore } from './state/useDawStore'
 import { selectWindowOpen, useWindowStore } from './state/useWindowStore'
+
+/** The app's output level, written the way a channel's own volume is. */
+function formatVolume(value: number): string {
+  return `${Math.round(value * 100)}%`
+}
 
 function App(): React.JSX.Element {
   const channels = useDawStore((state) => state.channels)
@@ -24,12 +31,13 @@ function App(): React.JSX.Element {
   const clearError = useDawStore((state) => state.clearError)
   const pianoRollChannelId = useDawStore((state) => state.pianoRollChannelId)
   const closePianoRoll = useDawStore((state) => state.closePianoRoll)
-  const playMode = useDawStore((state) => state.playMode)
   const playback = useDawStore((state) => state.playback)
   const playSteps = useDawStore((state) => state.playSteps)
   const playSong = useDawStore((state) => state.playSong)
   const playPianoRoll = useDawStore((state) => state.playPianoRoll)
   const stopSequence = useDawStore((state) => state.stopSequence)
+  const masterVolume = useDawStore((state) => state.masterVolume)
+  const setMasterVolume = useDawStore((state) => state.setMasterVolume)
   const undo = useDawStore((state) => state.undo)
   const openProject = useDawStore((state) => state.openProject)
   const saveProject = useDawStore((state) => state.saveProject)
@@ -44,6 +52,19 @@ function App(): React.JSX.Element {
   const libraryOpen = useWindowStore((state) => selectWindowOpen(state.windows, 'sample-browser'))
   const toggleWindow = useWindowStore((state) => state.toggleWindow)
   const setWorkArea = useWindowStore((state) => state.setWorkArea)
+  /**
+   * Which window Space plays to: the one the mouse was last pressed inside.
+   *
+   * Read through the windows as well, because the two outlive each other — a
+   * window can be closed with nothing there to clear this, and a window that is
+   * gone has no transport to play. A boolean or an id, never an object, so this
+   * only re-renders when the answer actually changes.
+   */
+  const focusedWindowId = useWindowStore((state) =>
+    state.focusedId !== null && selectWindowOpen(state.windows, state.focusedId)
+      ? state.focusedId
+      : null
+  )
 
   // Resolved from the id rather than stored as an object, so the panel always
   // shows the channel's current notes and name.
@@ -103,9 +124,10 @@ function App(): React.JSX.Element {
    * The project's keyboard: the transport, undo, and the two file keys.
    *
    * Registered on the window because it belongs to whatever is on screen rather
-   * than to any one panel: Space plays what is in front of you — the open piano
-   * roll if there is one, the song in song mode, the step loop otherwise — which
-   * is what makes it the same key in every view.
+   * than to any one panel. Space plays the window the mouse was last pressed in —
+   * the roll in the piano roll, the arrangement in Song, the loop in the step
+   * window — and does nothing in the two panels that have no transport of their
+   * own. It is one key everywhere because it asks the window, not the app.
    */
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent): void => {
@@ -140,26 +162,42 @@ function App(): React.JSX.Element {
       // focused by the last click.
       event.preventDefault()
 
+      // Stopping is the one thing that is not a window's: there is a single
+      // transport, and Space ends it from wherever it is pressed.
       if (playback !== null) {
         stopSequence()
         return
       }
-      if (pianoRollChannelId !== null) {
-        if (pianoRollNoteCount > 0) void playPianoRoll(pianoRollChannelId)
-        return
+
+      switch (focusedWindowId) {
+        case 'piano-roll':
+          // An open roll need not be bound to anything, and an empty one has
+          // nothing to play — no transport, so no reaction.
+          if (pianoRollChannelId !== null && pianoRollNoteCount > 0) {
+            void playPianoRoll(pianoRollChannelId)
+          }
+          return
+        case 'playlist':
+          void playSong()
+          return
+        case 'steps':
+          void playSteps()
+          return
+        case 'channel-rack':
+        case 'sample-browser':
+          return
+        case null:
+          // Nothing has been pointed at yet, so there is no window to ask. The
+          // arrangement is the answer, being the one thing that is always there.
+          void playSong()
       }
-      if (playMode === 'song') {
-        void playSong()
-        return
-      }
-      void playSteps()
     }
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [
     playback,
-    playMode,
+    focusedWindowId,
     pianoRollChannelId,
     pianoRollNoteCount,
     playSteps,
@@ -212,6 +250,18 @@ function App(): React.JSX.Element {
         >
           {stepsPlaying ? '⏸ 停止步进' : '▶ 播放步进'}
         </button>
+        {/* The app's own level, next to the transport it applies to. It is not a
+            channel's and not the song's: nothing here is written down, so a
+            project saved with the knob down reopens at 100%. */}
+        <Knob
+          label="总音量"
+          value={masterVolume}
+          min={0}
+          max={1}
+          defaultValue={1}
+          format={formatVolume}
+          onChange={setMasterVolume}
+        />
         <button
           type="button"
           className="toolbar__button"
@@ -279,6 +329,10 @@ function App(): React.JSX.Element {
 
         <DawWindow id="sample-browser">
           <SampleBrowser />
+        </DawWindow>
+
+        <DawWindow id="steps">
+          <StepsWindow />
         </DawWindow>
 
         {/* Closing this one has to stop its transport and drop the channel it

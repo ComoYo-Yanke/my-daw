@@ -3,6 +3,7 @@ import ConfirmDialog from './ConfirmDialog'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu'
 import SamplePicker from './SamplePicker'
 import { useDawStore, type Channel, type Pattern } from '../state/useDawStore'
+import { selectWindowOpen, useWindowStore } from '../state/useWindowStore'
 import { EMPTY_STEPS, hasSteps } from '../types/step'
 
 /** Where a right-click opened a menu, and which tab it was on. */
@@ -12,12 +13,17 @@ type Menu = { patternId: string; x: number; y: number }
 type Pending = { patternId: string; name: string; clips: number }
 
 /**
- * The pattern switcher above the rack.
+ * The pattern switcher above the rack, and the three window buttons beside it.
  *
  * Tabs rather than a dropdown, so the same interaction the channel names use —
  * click to switch, double-click to rename — works here too. What a tab cannot
  * show is everything else that can be done to a pattern, which is what the
  * right-click menu is for.
+ *
+ * The three buttons on the left are the three panels this bar sits between: the
+ * rack holding the pattern's channels, the timeline arranging the patterns, and
+ * the step window writing one. They are here because this is the strip that is
+ * always up and the one that says which pattern everything below refers to.
  */
 function PatternBar(): React.JSX.Element {
   const patterns = useDawStore((state) => state.patterns)
@@ -28,9 +34,12 @@ function PatternBar(): React.JSX.Element {
   const duplicatePattern = useDawStore((state) => state.duplicatePattern)
   const removePattern = useDawStore((state) => state.removePattern)
   const renamePattern = useDawStore((state) => state.renamePattern)
-  const playMode = useDawStore((state) => state.playMode)
-  const setPlayMode = useDawStore((state) => state.setPlayMode)
   const channels = useDawStore((state) => state.channels)
+
+  const toggleWindow = useWindowStore((state) => state.toggleWindow)
+  const rackOpen = useWindowStore((state) => selectWindowOpen(state.windows, 'channel-rack'))
+  const listOpen = useWindowStore((state) => selectWindowOpen(state.windows, 'playlist'))
+  const stepsOpen = useWindowStore((state) => selectWindowOpen(state.windows, 'steps'))
 
   /** Non-null while a tab's name is being edited. */
   const [draft, setDraft] = useState<{ id: string; name: string } | null>(null)
@@ -115,19 +124,39 @@ function PatternBar(): React.JSX.Element {
 
   return (
     <div className="pattern-bar">
-      <div className="mode-switch" role="group" aria-label="模式">
-        {(['pattern', 'song'] as const).map((mode) => (
-          <button
-            key={mode}
-            type="button"
-            className="mode-switch__option"
-            aria-pressed={playMode === mode}
-            onClick={() => setPlayMode(mode)}
-            title={mode === 'pattern' ? '编辑单个 Pattern' : '在时间线上编排 Pattern'}
-          >
-            {mode === 'pattern' ? 'Pattern' : 'Song'}
-          </button>
-        ))}
+      {/* Three windows, as three buttons.
+          Two of them used to be a project mode — Pattern or Song — which the
+          transport keys went by. Nothing is switched any more: each button opens
+          the panel it names, and Space plays to the window the mouse is in, so
+          what the buttons have to say is which windows are up. */}
+      <div className="window-switch" role="group" aria-label="窗口">
+        <button
+          type="button"
+          className="toolbar__button toolbar__button--slim"
+          aria-pressed={rackOpen}
+          onClick={() => toggleWindow('channel-rack')}
+          title="打开机架：当前 Pattern 的通道"
+        >
+          Pattern
+        </button>
+        <button
+          type="button"
+          className="toolbar__button toolbar__button--slim"
+          aria-pressed={listOpen}
+          onClick={() => toggleWindow('playlist')}
+          title="打开 Song，在时间线上编排 Pattern"
+        >
+          Song
+        </button>
+        <button
+          type="button"
+          className="toolbar__button toolbar__button--slim"
+          aria-pressed={stepsOpen}
+          onClick={() => toggleWindow('steps')}
+          title="打开步进窗：每个通道的步进网格、步数和 Swing"
+        >
+          步进
+        </button>
       </div>
 
       <span className="pattern-bar__label">Pattern</span>
