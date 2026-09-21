@@ -19,8 +19,10 @@ import {
   LENGTH_BAR_OPTIONS,
   MAX_KEY_PX,
   MAX_STEP_PX,
+  MAX_VELOCITY,
   MIN_KEY_PX,
   MIN_STEP_PX,
+  MIN_VELOCITY,
   PIANO_KEY_COUNT,
   STEP_PX,
   STEPS_PER_BEAT,
@@ -94,6 +96,19 @@ type Drag =
       additive: boolean
     }
   | {
+      kind: 'velocity'
+      /**
+       * The velocity the pointer was pointing at when the drag started.
+       *
+       * A delta is what the notes move by, rather than each of them being set to
+       * what the pointer is on: that is what keeps the differences between the
+       * notes of a chord, which is the whole reason to have velocities on one.
+       */
+      originVelocity: number
+      /** Every note being adjusted, as they were at grab time. */
+      origins: Note[]
+    }
+  | {
       /** Dragging the play cursor along the ruler. */
       kind: 'cursor'
     }
@@ -102,6 +117,16 @@ type Drag =
 const KEYS_WIDTH_PX = 64
 /** Height of the bar-number ruler, in pixels. */
 const RULER_HEIGHT_PX = 18
+/**
+ * Height of the velocity lane along the bottom, in pixels.
+ *
+ * Deep enough that 127 levels are worth dragging through — at this height one
+ * pixel of travel is about two velocity steps, so the full range is reachable
+ * without the lane taking a third of the panel.
+ */
+const VELOCITY_LANE_PX = 64
+/** How much Ctrl with an arrow key moves a note's velocity. */
+const VELOCITY_STEP = 10
 
 /**
  * How far a selecting drag has to travel before it draws its rectangle.
@@ -134,6 +159,7 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
   const moveNotes = useDawStore((state) => state.moveNotes)
   const resizeNotes = useDawStore((state) => state.resizeNotes)
   const removeNotes = useDawStore((state) => state.removeNotes)
+  const adjustVelocity = useDawStore((state) => state.adjustVelocity)
   const previewPitch = useDawStore((state) => state.previewPitch)
   const playPianoRoll = useDawStore((state) => state.playPianoRoll)
   const stopSequence = useDawStore((state) => state.stopSequence)
@@ -151,6 +177,7 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const gridRef = useRef<HTMLDivElement>(null)
+  const velRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<Drag | null>(null)
 
   /**
@@ -331,6 +358,24 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
     return rect ? clientY - rect.top : 0
   }, [])
 
+  /**
+   * Which velocity a point in the lane stands for.
+   *
+   * The lane is a 0..127 scale drawn bottom-up, so its top edge is the loudest a
+   * note can be and its floor is silence. Measured off the element's own rect,
+   * which is where the lane is *drawn* rather than where it sits in the scrolled
+   * content — it is pinned to the bottom of the viewport, so the two differ.
+   */
+  const velocityAt = useCallback((clientY: number): number => {
+    const rect = velRef.current?.getBoundingClientRect()
+    if (!rect || rect.height === 0) return 0
+    return clamp(
+      (1 - (clientY - rect.top) / rect.height) * MAX_VELOCITY,
+      MIN_VELOCITY,
+      MAX_VELOCITY
+    )
+  }, [])
+
   /** A time on the grid, in seconds. */
   const timeAt = useCallback(
     (clientX: number): number => (contentXAt(clientX) / stepPx) * stepSec,
@@ -394,9 +439,9 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
       }
 
       if (event.shiftKey) {
-        setKeyPx((current) => clampZoom(current * factor, MIN_KEY_PX, MAX_KEY_PX))
+        setKeyPx((current) => clamp(current * factor, MIN_KEY_PX, MAX_KEY_PX))
       } else {
-        setStepPx((current) => clampZoom(current * factor, MIN_STEP_PX, MAX_STEP_PX))
+        setStepPx((current) => clamp(current * factor, MIN_STEP_PX, MAX_STEP_PX))
       }
     }
 
@@ -416,6 +461,14 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
             ? snapSec(timeAt(event.clientX), bpm, gridDivision)
             : timeAt(event.clientX)
         )
+        return
+      }
+
+      if (drag.kind === 'velocity') {
+        // How far the pointer has travelled up the lane, not the velocity under
+        // it: the notes move by that much, so a group keeps its own shape
+        // instead of collapsing onto whatever the pointer is pointing at.
+        adjustVelocity(channel.id, drag.origins, velocityAt(event.clientY) - drag.originVelocity)
         return
       }
 
@@ -485,6 +538,7 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
     channel.id,
     moveNotes,
     resizeNotes,
+    adjustVelocity,
     setSelectedIds,
     setPianoRollStart,
     snapping,
@@ -492,6 +546,7 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
     rectForNote,
     contentXAt,
     contentYAt,
+    velocityAt,
     timeAt,
     stepPx,
     keyPx,
@@ -573,6 +628,21 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
         return
       }
 
+      // Velocity, in steps of ten. Ctrl with the arrow keys rather than the bare
+      // ones because the arrows belong to the grid — this is the only thing in
+      // the panel that a bare arrow could mean, and it is not worth taking them
+      // away from scrolling for.
+      if (modifier && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+        if (selectedIds.length === 0) return
+        event.preventDefault()
+        adjustVelocity(
+          channel.id,
+          notes.filter((note) => selected.has(note.id)),
+          event.key === 'ArrowUp' ? VELOCITY_STEP : -VELOCITY_STEP
+        )
+        return
+      }
+
       if (event.key === 'Delete' || event.key === 'Backspace') {
         if (selectedIds.length === 0) return
         event.preventDefault()
@@ -598,6 +668,7 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
     bpm,
     gridDivision,
     addNotes,
+    adjustVelocity,
     removeNotes
   ])
 
@@ -698,6 +769,54 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
     })
   }
 
+  /**
+   * Which notes a press in the velocity lane takes hold of.
+   *
+   * The rule is the one a press on the note itself follows — a note that is
+   * already selected drags the whole selection, a note that is not becomes the
+   * selection and drags alone — with one addition: a press on bare lane, between
+   * the stems or past the last note, drags whatever is selected. The lane is a
+   * drag surface rather than a row of buttons, and asking the pointer to find a
+   * stem a few pixels wide before it can change anything would make the editing
+   * the spec asks for the hardest part of using it.
+   *
+   * Where several notes start at the same point — a chord — the selection wins
+   * over the draw order, so a stem that is already picked stays the one the drag
+   * is about.
+   */
+  const velocityTargetsAt = (clientX: number): Note[] => {
+    const x = contentXAt(clientX)
+    const under = notes.filter((note) => {
+      const rect = rectForNote(note)
+      return x >= rect.x && x <= rect.x + rect.width
+    })
+
+    const picked = under.filter((note) => selected.has(note.id))
+    const hit = picked.length > 0 ? picked[picked.length - 1] : under[under.length - 1]
+    // Nothing under the pointer: the selection, if there is one.
+    if (hit === undefined) return notes.filter((note) => selected.has(note.id))
+    return selected.has(hit.id) ? notes.filter((note) => selected.has(note.id)) : [hit]
+  }
+
+  /** A press in the velocity lane: choose what to change, then drag it. */
+  const handleVelocityPointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0) return
+
+    const targets = velocityTargetsAt(event.clientX)
+    if (targets.length === 0) return
+    // Only when the drag reaches something outside the selection: dragging a
+    // group must not silently reduce it to the one stem that was grabbed.
+    if (!targets.every((note) => selected.has(note.id))) {
+      setSelectedIds(targets.map((note) => note.id))
+    }
+
+    startDrag(event, {
+      kind: 'velocity',
+      originVelocity: velocityAt(event.clientY),
+      origins: targets
+    })
+  }
+
   /** A press on the ruler sets where playback starts from. */
   const handleRulerPointerDown = (event: React.PointerEvent<HTMLDivElement>): void => {
     if (event.button !== 0) return
@@ -728,8 +847,8 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
         y: element.scrollTop + offsetY
       }
     }
-    setStepPx((current) => clampZoom(current * factor, MIN_STEP_PX, MAX_STEP_PX))
-    setKeyPx((current) => clampZoom(current * factor, MIN_KEY_PX, MAX_KEY_PX))
+    setStepPx((current) => clamp(current * factor, MIN_STEP_PX, MAX_STEP_PX))
+    setKeyPx((current) => clamp(current * factor, MIN_KEY_PX, MAX_KEY_PX))
   }
 
   const resetZoom = (): void => {
@@ -750,8 +869,26 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
     '--pr-grid-h': `${gridHeightPx}px`,
     '--pr-cell-w': `${cellPx}px`,
     '--pr-beat-w': `${barPx / BEATS_PER_BAR}px`,
-    '--pr-bar-w': `${barPx}px`
+    '--pr-bar-w': `${barPx}px`,
+    '--pr-vel-h': `${VELOCITY_LANE_PX}px`
   } as React.CSSProperties
+
+  /**
+   * What the lane's gutter says about the selection.
+   *
+   * One value when one note is selected, and the range when several are: a group
+   * can hold different velocities, and a single number for it would be a
+   * different number depending on which note it was read from.
+   */
+  const selectedVelocities = notes
+    .filter((note) => selected.has(note.id))
+    .map((note) => note.velocity)
+  const velocityReadout =
+    selectedVelocities.length === 0
+      ? '—'
+      : selectedVelocities.length === 1
+        ? String(selectedVelocities[0])
+        : `${Math.min(...selectedVelocities)}–${Math.max(...selectedVelocities)}`
 
   // Bar and beat rather than seconds: it is what the ruler above the notes says,
   // so the readout and the grid agree about where the line is.
@@ -903,8 +1040,8 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
 
         <span className="pr__hint">
           空白拖动＝画音符（拖出长度）· 「框选」工具或 Shift+拖动＝框选 · 右边缘拖动＝改长度 ·
-          标尺＝播放起点 · 拖动音符＝移动 · 右键＝删除 · 空格＝播放 · Ctrl+Z＝撤销 · Ctrl+滚轮＝缩放
-          · Alt＝临时取消吸附
+          标尺＝播放起点 · 拖动音符＝移动 · 右键＝删除 · 底部力度条拖动＝改力度 · Ctrl+↑↓＝力度 ±10
+          · 空格＝播放 · Ctrl+Z＝撤销 · Ctrl+滚轮＝缩放 · Alt＝临时取消吸附
         </span>
       </div>
 
@@ -969,8 +1106,10 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
                       height: `${Math.max(3, keyPx - 1)}px`,
                       background: channel.color,
                       // Velocity is audible, so it is visible too: a quiet note is
-                      // a faded one, which is what FL's note colours do.
-                      opacity: 0.45 + 0.55 * (note.velocity / 127)
+                      // a faded one, which is what FL's note colours do. The floor
+                      // is well clear of zero so that the quietest note is still a
+                      // note you can see, aim at and drag.
+                      opacity: 0.25 + 0.75 * (note.velocity / MAX_VELOCITY)
                     }}
                     title={`${noteName(note.pitch)} · 第 ${Math.floor(note.startSec / barSec) + 1} 小节 ${Math.floor((note.startSec % barSec) / beatSec) + 1} 拍 · 长 ${note.lengthSec.toFixed(3)}s · 力度 ${note.velocity}`}
                     onPointerDown={(event) => handleNotePointerDown(event, note)}
@@ -1022,6 +1161,37 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
                 }
               />
             </div>
+
+            {/* The velocity lane, under the grid and in the grid's own column, so
+                a stem is always at the x of the note it belongs to however the
+                grid is scrolled. Pinned to the bottom of the viewport: it is a
+                scale to drag against, and a scale that scrolls away is no use. */}
+            <div className="pr__vel-label" title="选中音符的力度">
+              <span className="pr__vel-title">力度</span>
+              <span className="pr__vel-value">{velocityReadout}</span>
+            </div>
+
+            <div
+              className="pr-vel"
+              ref={velRef}
+              onPointerDown={handleVelocityPointerDown}
+              title="拖动＝改选中音符的力度 · Ctrl+↑↓＝每次 ±10"
+            >
+              {notes.map((note) => (
+                <span
+                  key={note.id}
+                  className="pr-vel__stem"
+                  data-selected={selected.has(note.id)}
+                  style={{
+                    left: `${(note.startSec / stepSec) * stepPx}px`,
+                    // Height *is* the reading: the top of the lane is 127, the
+                    // floor is 0, so a stem can be compared by eye.
+                    height: `${Math.max(2, (note.velocity / MAX_VELOCITY) * 100)}%`,
+                    background: channel.color
+                  }}
+                />
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -1029,7 +1199,7 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
   )
 }
 
-function clampZoom(value: number, min: number, max: number): number {
+function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
 

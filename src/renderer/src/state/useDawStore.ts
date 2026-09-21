@@ -33,7 +33,9 @@ import {
   HIGHEST_PITCH,
   LOWEST_PITCH,
   MAX_BPM,
+  MAX_VELOCITY,
   MIN_BPM,
+  MIN_VELOCITY,
   minNoteSec,
   secondsPerBar,
   secondsPerGrid,
@@ -535,6 +537,28 @@ export type DawState = {
    * pattern's end stops the group rather than being squashed against it.
    */
   resizeNotes: (channelId: string, origins: Note[], deltaSec: number, snap?: boolean) => void
+  /**
+   * Change how hard a set of notes is played.
+   *
+   * Shaped like `moveNotes` and `resizeNotes`: `origins` are the notes as they
+   * were when the drag started, and the delta is measured from there rather than
+   * accumulated, so a drag that wanders and comes back lands on the velocities
+   * it started with.
+   *
+   * It is deliberately *not* clamped as a group the way those two are. A length
+   * is capped by the pattern and a position by the pattern's edges, so when one
+   * note runs out of room there is genuinely nothing left for the rest of the
+   * group to take and stopping the group is what keeps its shape. Velocity is
+   * capped by the note itself, and clamping the group would mean that one note
+   * sitting at 127 — which `Ctrl+A` over a part anyone has edited will usually
+   * find — freezes every note beneath it, so that "louder by ten" does nothing
+   * at all. Each note therefore saturates on its own, and the group flattens
+   * only once its loudest member has actually reached the top.
+   *
+   * Zero is a legal result: velocity 0 is silence, which is how a note is muted
+   * without being deleted.
+   */
+  adjustVelocity: (channelId: string, origins: Note[], deltaVelocity: number) => void
   removeNote: (channelId: string, noteId: string) => void
   removeNotes: (channelId: string, noteIds: string[]) => void
   /** Sound one pitch through a channel, for auditioning a piano key. */
@@ -2600,6 +2624,26 @@ export const useDawStore = create<DawState>((set, get) => {
           const origin = origins.find((item) => item.id === note.id)
           if (!origin) return note
           return { ...note, lengthSec: origin.lengthSec + resizeSec }
+        })
+      )
+    },
+
+    adjustVelocity: (channelId, origins, deltaVelocity) => {
+      if (origins.length === 0) return
+
+      // Whole steps, because MIDI velocity has no fractions and a drag would
+      // otherwise write 63.99999 into the project file. Every note moves by the
+      // same shift and saturates on its own — see the interface comment.
+      const shift = Math.round(deltaVelocity)
+
+      // Keyed on which notes are changing, so one drag folds into one step and a
+      // repeat of the key that nudged them is its own.
+      pushUndo(`velocity:${channelId}:${origins.map((note) => note.id).join(',')}`)
+      patchNotes(channelId, (notes) =>
+        notes.map((note) => {
+          const origin = origins.find((item) => item.id === note.id)
+          if (!origin) return note
+          return { ...note, velocity: clamp(origin.velocity + shift, MIN_VELOCITY, MAX_VELOCITY) }
         })
       )
     },

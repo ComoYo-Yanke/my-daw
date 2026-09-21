@@ -24,6 +24,15 @@ export type Note = {
   velocity: number
 }
 
+/**
+ * The velocity range, which is the MIDI one.
+ *
+ * Zero is silence rather than "very quiet", and it is a legal thing to write —
+ * a note held at zero is how a part is muted without deleting it.
+ */
+export const MIN_VELOCITY = 0
+export const MAX_VELOCITY = 127
+
 /** Velocity a freshly drawn note gets: comfortably above the middle. */
 export const DEFAULT_VELOCITY = 100
 

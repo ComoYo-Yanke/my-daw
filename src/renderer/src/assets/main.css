@@ -1705,7 +1705,7 @@ body {
 .pr__canvas {
   display: grid;
   grid-template-columns: var(--pr-keys-w) var(--pr-grid-w);
-  grid-template-rows: var(--pr-ruler-h) var(--pr-grid-h);
+  grid-template-rows: var(--pr-ruler-h) var(--pr-grid-h) var(--pr-vel-h);
   width: max-content;
 }
 
@@ -1879,6 +1879,72 @@ body {
   outline: 2px solid #ffffff;
   outline-offset: -1px;
   filter: brightness(1.2);
+}
+
+/* Velocity lane.
+   The gutter, in the same column and with the same sticky treatment as the
+   corner above it, so the readout stays beside the stems it describes. */
+.pr__vel-label {
+  position: sticky;
+  left: 0;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  box-sizing: border-box;
+  padding: 0 6px;
+  border-top: 1px solid var(--daw-border);
+  border-right: 1px solid var(--daw-border);
+  background: var(--daw-panel);
+}
+
+.pr__vel-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--ev-c-text-3);
+}
+
+.pr__vel-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The lane itself, in the grid's own column so a stem lands under its note.
+   Bottom-up: the top of the strip is 127 and the floor is 0, so a stem's height
+   *is* how hard the note is played and a chord can be read at a glance.
+   Sticky rather than static, because a scale you have to scroll to is no use for
+   dragging against — and sticky elements are positioned, so the stems below can
+   anchor to it. */
+.pr-vel {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  border-top: 1px solid var(--daw-border);
+  background: #14141a;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+/* One per note. Narrow, and out of the pointer's way on purpose: the whole lane
+   is the drag surface, so nothing here has to be hit precisely. */
+.pr-vel__stem {
+  position: absolute;
+  bottom: 0;
+  width: 3px;
+  border-radius: 1px 1px 0 0;
+  opacity: 0.75;
+  pointer-events: none;
+}
+
+/* Outlined rather than recoloured, for the same reason selected notes are: the
+   fill is the channel's colour and the height is the velocity, and overriding
+   either of them would hide the thing being edited. */
+.pr-vel__stem[data-selected='true'] {
+  opacity: 1;
+  box-shadow: 0 0 0 1px #ffffff;
 }
 
 /* The rectangle being dragged over empty grid. */
