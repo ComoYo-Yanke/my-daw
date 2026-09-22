@@ -372,8 +372,12 @@ function createWindow(): void {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
-  // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+  // Windows 认「这个进程就是那个快捷方式」靠的是 AppUserModelID，所以它必须和
+  // electron-builder 写进快捷方式的那个 appId 一模一样。这里原来是 'com.electron'
+  // （electron-vite 模板留下的），而 electron-builder.yml 里是 'com.electron.app' ——
+  // 差一个后缀，Windows 就把运行中的窗口和装出来的快捷方式当成两个程序：固定到任务栏
+  // 或者开始菜单的图标可能显示成通用的那个，也可能出现两个按钮。
+  electronApp.setAppUserModelId('com.electron.app')
 
   /**
    * No menu bar.
