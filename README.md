@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="resources/icon.png" width="140" alt="my-daw">
+</p>
+
 # my-daw
 
 个人自用的桌面 DAW，按 FL Studio 的工作流组织：Channel Rack / Piano Roll / Pattern / Playlist。
@@ -5,6 +9,34 @@
 不做：实时 MIDI 演奏、VST 托管、自动更新、云同步、多用户。
 
 **中文** · [English](#english)
+
+## 预览 · Preview
+
+所有窗口都是浮动的，位置随你摆 —— 下面几张图里的摆法互不相同。
+
+**打开就长这样：机架 + 播放列表 · As it opens: rack and playlist**
+
+![Channel Rack 与 Playlist](resources/view1.png)
+
+**采样库：内置 Drums / Guitar / Piano，加上自己指向的文件夹 · Sample library: built-in Drums / Guitar / Piano, plus a folder you point it at**
+
+![采样库](resources/view2.png)
+
+**钢琴卷帘：画音符，底部是力度条 · Piano roll: draw notes, with the velocity lane underneath**
+
+![钢琴卷帘](resources/view3.png)
+
+**导出音频：整首 Song 离线渲染成 WAV / MP3 · Export: the whole Song rendered offline to WAV or MP3**
+
+![导出音频](resources/view4.png)
+
+**效果链：每个通道一条，混响 / 延迟 / 失真 · Effect chain: one per channel — reverb, delay, distortion**
+
+![效果器面板](resources/view5.png)
+
+**合成器：双振荡器、ADSR 包络、滤波器 · Synth: two oscillators, an ADSR envelope and a filter**
+
+![合成器面板](resources/view6.png)
 
 ---
 
