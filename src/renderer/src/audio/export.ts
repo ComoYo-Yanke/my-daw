@@ -33,6 +33,12 @@
 // file. Offline, nothing is heard until the render runs, so the ramps are written
 // against the song's own clock rather than the context's.
 //
+// A note's own envelope is the second shared piece, and the one that used to be
+// missing here: `scheduleVoiceEnvelope` is the live engine's fade-in and fade-out,
+// called on this context instead of that one. A note built without it is ended by
+// `source.stop()` alone, which truncates rather than fades — and a waveform cut
+// where it is not zero is a step, heard as a click at the end of every note.
+//
 // Nothing in here reads the store: the caller flattens the song into
 // `ExportVoice`s first. That keeps the render the same code whatever the
 // timeline was made of, and keeps the store out of the DSP.
@@ -40,7 +46,13 @@
 import { Mp3Encoder } from '@breezystack/lamejs'
 
 import { createEffectChain } from './effects'
-import { gainForVelocity, pitchShiftedBuffer, scheduleGainCurve, type SongNote } from './engine'
+import {
+  alignToSample,
+  pitchShiftedBuffer,
+  scheduleGainCurve,
+  scheduleVoiceEnvelope,
+  type SongNote
+} from './engine'
 import { buildSynthVoice } from './synth'
 import type { Effect } from '../types/effect'
 import { soundingSec } from '../types/note'
@@ -220,18 +232,31 @@ export async function renderMix(
       const picked = voiceForPitch(voice.zones, note.pitch)
 
       const source = offline.createBufferSource()
-      source.buffer = pitchShiftedBuffer(picked.buffer, picked.shift)
+      const rendered = pitchShiftedBuffer(picked.buffer, picked.shift)
+      source.buffer = rendered
 
       const velocityGain = offline.createGain()
-      velocityGain.gain.value = gainForVelocity(note.velocity)
       source.connect(velocityGain)
       velocityGain.connect(target)
+
+      // Aligned on the way in, so the envelope and the stop below name the same
+      // instants the live engine would, to the sample.
+      const startSec = alignToSample(note.startSec, offline.sampleRate)
+      const soundSec = alignToSample(soundingSec(note), offline.sampleRate)
+
+      // The same envelope the live engine writes, on this context's own clock.
+      // Without it every note in the file ended on a step: `source.stop()`
+      // truncates rather than fades, so a sample still swinging when its note ran
+      // out was cut from wherever it happened to be straight to zero — a click,
+      // once per note, on the grid. Live, these two ramps were always written;
+      // this path was the one that never had them.
+      scheduleVoiceEnvelope(velocityGain.gain, note.velocity, startSec, soundSec, rendered.duration)
 
       // Stopped where the live engine stops it, tail included: a file that cut
       // every note back to the length it was drawn at would be missing exactly the
       // decays the tails were added to hear.
-      source.start(note.startSec)
-      source.stop(note.startSec + soundingSec(note))
+      source.start(startSec)
+      source.stop(startSec + soundSec)
     }
   }
 
@@ -266,7 +291,17 @@ function noteTarget(offline: OfflineAudioContext, stripInput: GainNode, note: So
   if (curve === undefined || curve.length === 0 || curveOffsetSec === undefined) return stripInput
 
   const automation = offline.createGain()
-  scheduleGainCurve(automation.gain, curve, curveOffsetSec, note.startSec, note.lengthSec)
+  // Aligned like the note's own envelope and stop, so all three are measured
+  // from the same instant rather than from values a fraction of a sample apart.
+  // Aligning an already-aligned time is a no-op, so this needs no care about
+  // which of the two callers got here first.
+  scheduleGainCurve(
+    automation.gain,
+    curve,
+    curveOffsetSec,
+    alignToSample(note.startSec, offline.sampleRate),
+    note.lengthSec
+  )
   automation.connect(stripInput)
   return automation
 }
@@ -457,12 +492,16 @@ export async function encodeWav(
       for (let channel = 0; channel < channels; channel += 1) {
         // Clamped rather than wrapped: a render that overshot full scale is a
         // loud file, and 16-bit wrapping would turn that into a burst of noise.
-        const sample = clampSample(data[channel][frame])
+        const sample = data[channel][frame]
         if (bitDepth === 16) {
-          view.setInt16(offset, Math.round(sample * 32767), true)
+          // Dithered, then clamped, in that order: the dither can push a sample
+          // that was sitting on full scale past it, and clamping first would let
+          // that wrap round to the opposite rail.
+          const value = clampSample(sample + dither16())
+          view.setInt16(offset, Math.round(value * 32767), true)
           offset += 2
         } else {
-          const value = Math.round(sample * 8388607)
+          const value = Math.round(clampSample(sample) * 8388607)
           out[offset] = value & 0xff
           out[offset + 1] = (value >> 8) & 0xff
           out[offset + 2] = (value >> 16) & 0xff
@@ -561,4 +600,27 @@ function writeAscii(view: DataView, offset: number, text: string): void {
 
 function clampSample(value: number): number {
   return value < -1 ? -1 : value > 1 ? 1 : value
+}
+
+/** One step of a 16-bit sample, as the amplitude the renderer deals in. */
+const DITHER_LSB = 1 / 32767
+
+/**
+ * Triangular dither, in units of one 16-bit step.
+ *
+ * Two independent uniform values rather than one: their sum is triangular, and
+ * triangular is what breaks the *correlation* between the quantisation error and
+ * the signal. Without it a quiet sustained passage rounds to the same few codes
+ * over and over, and that repeating error is a tone sitting on the fade — the
+ * kind of thing that is inaudible on a full mix and obvious on a solo tail. With
+ * it the error becomes a flat noise floor about 93 dB down, which nothing is
+ * heard through.
+ *
+ * 16-bit only, and for the reason above rather than by omission: 24 bits already
+ * sits 48 dB lower, where the error is not correlated with anything audible. The
+ * MP3 path is left alone too — it hands its samples to an encoder that is lossy
+ * by design and shapes what it does with them.
+ */
+function dither16(): number {
+  return (Math.random() - Math.random()) * DITHER_LSB
 }

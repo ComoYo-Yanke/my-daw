@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { getAudioContext, getMasterGain, resumeAudioContext } from '../audio/engine'
 import {
   encodeMp3,
   encodeWav,
@@ -99,6 +100,18 @@ function ExportDialog({ onClose }: ExportDialogProps): React.JSX.Element {
   const [savedPath, setSavedPath] = useState<string | null>(null)
   const [message, setMessage] = useState('')
 
+  /**
+   * The render itself, kept so it can be listened to and not only written out.
+   *
+   * This is the buffer the file is encoded from, held in memory rather than
+   * decoded back off disk: what the audition plays is therefore the very samples
+   * that were written, with no encoding in between to colour the answer.
+   */
+  const [renderedBuffer, setRenderedBuffer] = useState<AudioBuffer | null>(null)
+  const [previewing, setPreviewing] = useState(false)
+  /** The one node an audition is, when there is one. */
+  const previewRef = useRef<AudioBufferSourceNode | null>(null)
+
   const running = phase === 'running'
 
   useEffect(() => {
@@ -109,6 +122,52 @@ function ExportDialog({ onClose }: ExportDialogProps): React.JSX.Element {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [onClose, running])
 
+  // A dialog that closes mid-audition takes its sound with it. Silencing the node
+  // is not optional: the listener would otherwise keep playing a buffer nothing
+  // on screen can any longer stop.
+  useEffect(() => {
+    return () => {
+      previewRef.current?.stop()
+      previewRef.current = null
+    }
+  }, [])
+
+  /** Stop the audition, if one is running. `onended` settles the button either way. */
+  function stopPreview(): void {
+    previewRef.current?.stop()
+    previewRef.current = null
+    setPreviewing(false)
+  }
+
+  /**
+   * Play the rendered buffer once through the app's own output.
+   *
+   * Through `getMasterGain` rather than straight to the destination, because the
+   * point of this is to be compared against playback — and the comparison is only
+   * worth something if both arrive by the same path, master volume included.
+   */
+  async function togglePreview(): Promise<void> {
+    if (previewing) {
+      stopPreview()
+      return
+    }
+    if (renderedBuffer === null) return
+
+    await resumeAudioContext()
+    const source = getAudioContext().createBufferSource()
+    source.buffer = renderedBuffer
+    source.connect(getMasterGain())
+    // Fires for a stop as well as for the end of the buffer, so nothing has to
+    // decide which of the two just happened.
+    source.onended = () => {
+      if (previewRef.current === source) stopPreview()
+    }
+
+    previewRef.current = source
+    setPreviewing(true)
+    source.start()
+  }
+
   function update<K extends keyof ExportSettings>(key: K, value: ExportSettings[K]): void {
     setSettings((current) => ({ ...current, [key]: value }))
   }
@@ -117,6 +176,11 @@ function ExportDialog({ onClose }: ExportDialogProps): React.JSX.Element {
   async function run(): Promise<void> {
     setPhase('running')
     setProgress(0)
+
+    // A previous run's buffer is not this one's. Auditioning it would be playing
+    // audio the settings on screen no longer describe.
+    stopPreview()
+    setRenderedBuffer(null)
 
     try {
       const path = await window.api.chooseExportPath(
@@ -141,6 +205,7 @@ function ExportDialog({ onClose }: ExportDialogProps): React.JSX.Element {
       }
 
       const rendered = await renderMix(plan.voices, plan.durationSec, settings, report)
+      setRenderedBuffer(rendered)
       const bytes =
         settings.format === 'mp3'
           ? await encodeMp3(rendered, settings.mp3BitRate, report)
@@ -346,7 +411,20 @@ function ExportDialog({ onClose }: ExportDialogProps): React.JSX.Element {
             <p className="export__stage">已导出到</p>
             {/* Selectable: the point of showing a path is to be able to copy it. */}
             <p className="export__path">{savedPath}</p>
+            <p className="export__note">
+              试听放的是内存里那份渲染结果，和实时播放走同一个输出；写进文件的就是这些采样。
+            </p>
             <div className="confirm__actions">
+              <button
+                type="button"
+                className="confirm__button"
+                onClick={() => {
+                  void togglePreview()
+                }}
+                disabled={renderedBuffer === null}
+              >
+                {previewing ? '停止试听' : '试听渲染结果'}
+              </button>
               <button type="button" className="confirm__button" onClick={onClose} autoFocus>
                 完成
               </button>

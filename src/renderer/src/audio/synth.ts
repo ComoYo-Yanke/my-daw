@@ -14,6 +14,7 @@
 // 振荡器不自己做音量 —— 力度和 ADSR 都在最后那一级增益上乘，只有一处算响度。
 
 import {
+  alignToSample,
   gainForVelocity,
   getAudioContext,
   scheduleGainCurve,
@@ -173,11 +174,15 @@ export function buildSynthVoice(
   note: Note,
   atSec: number
 ): SynthVoice {
+  // 门和起点都先对齐到采样点。`atSec` 是调用方的时钟（实时是 `currentTime`，离线是歌
+  // 曲开头的秒数），两个上下文各自对齐一次，同一个音符在两边的落点就是同一个采样点。
+  const startSec = alignToSample(atSec, context.sampleRate)
   // 门的长度就是音符听起来的那一段：画出来的长度加上它带的尾音。和采样器同一条规矩
   // （见 `soundingSec`），所以同一个 Pattern 里的两种通道在时间上是对齐的。
-  const gateSec = soundingSec(note)
+  const gateSec = alignToSample(soundingSec(note), context.sampleRate)
   const releaseSec = Math.max(params.releaseSec, MIN_RELEASE_SEC)
-  const endSec = atSec + gateSec + releaseSec + VOICE_TAIL_SEC
+  // 尾巴那两项不对齐：振荡器停在包络早就归零之后，落在哪儿都不影响声音。
+  const endSec = startSec + gateSec + releaseSec + VOICE_TAIL_SEC
 
   const mix = context.createGain()
   mix.gain.value = params.oscCount === 2 ? MIX_PER_OSCILLATOR : 1
@@ -190,7 +195,7 @@ export function buildSynthVoice(
 
   const envelope = context.createGain()
   const points = envelopePoints(params, gateSec)
-  scheduleEnvelope(envelope.gain, points, gainForVelocity(note.velocity), atSec)
+  scheduleEnvelope(envelope.gain, points, gainForVelocity(note.velocity), startSec)
   filter.connect(envelope)
 
   const frequency = frequencyForPitch(note.pitch)
@@ -207,7 +212,7 @@ export function buildSynthVoice(
 
   // 两个振荡器各自排自己的起止，但时间完全一样，听不出是两个源头。
   for (const oscillator of oscillators) {
-    oscillator.start(atSec)
+    oscillator.start(startSec)
     oscillator.stop(endSec)
   }
 

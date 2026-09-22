@@ -670,6 +670,77 @@ export function scheduleGainCurve(
 }
 
 /**
+ * The nearest instant the audio clock can actually address.
+ *
+ * A `start`/`stop` time that falls between two sample frames is rounded to one by
+ * the implementation, so asking for an arbitrary fraction buys nothing and loses
+ * the guarantee that two events meant to land together do. Rounded here, the
+ * number the graph is handed is the number that was reasoned about — which is
+ * also what makes two renders of the same song come out identical.
+ *
+ * Half a sample either way, so this changes nothing that can be heard. It is not
+ * what fixes a click: a waveform cut where it is not zero is a step discontinuity
+ * wherever the cut lands. It is what keeps the timeline and the file agreeing on
+ * where that cut was.
+ */
+export function alignToSample(sec: number, sampleRate: number): number {
+  return Math.round(sec * sampleRate) / sampleRate
+}
+
+/**
+ * One note's amplitude envelope, written onto whichever clock the caller keeps.
+ *
+ * Extracted from `scheduleNoteSequence` because the offline renderer needs the
+ * same envelope and had been left without one. A note that is cut short by its own
+ * end has to be faded out, and `source.stop()` does not fade — it truncates. Live,
+ * every note got these two ramps; in the exported file, sampler notes got neither,
+ * so every one of them ended on a step. That is a click once per note, on a grid,
+ * which is exactly what a file of 哒哒哒 is.
+ *
+ * `atSec` is the note's start on the caller's own clock: an
+ * `AudioContext.currentTime` value live, seconds from the top of the song in a
+ * render. `sampleDurationSec` is how long the buffer this note plays really lasts
+ * — a re-pitched copy included, because that is the copy about to be heard, and
+ * the one whose end decides whether there is anything left to fade.
+ *
+ * Velocity is the height of the envelope and `gainForVelocity` is the only thing
+ * that decides it. A clip's volume curve, where there is one, is a second gain in
+ * series rather than a replacement for this one.
+ */
+export function scheduleVoiceEnvelope(
+  gain: AudioParam,
+  velocity: number,
+  atSec: number,
+  soundSec: number,
+  sampleDurationSec: number
+): void {
+  const level = gainForVelocity(velocity)
+  const endSec = atSec + soundSec
+
+  // Both fades are bounded by half of what is heard, so that a note shorter than
+  // the two of them together still opens and closes instead of having one run over
+  // the other — which would leave it silent, or ending on a step after all. Half
+  // of the *sounding* length, tail included, so that extending a clipped note
+  // lengthens it rather than lengthening one of its two fades.
+  const fadeInSec = Math.min(VOICE_FADE_IN_SEC, soundSec / 2)
+  const fadeOutSec = Math.min(VOICE_FADE_OUT_SEC, soundSec / 2)
+
+  gain.setValueAtTime(0, atSec)
+  gain.linearRampToValueAtTime(level, atSec + fadeInSec)
+
+  // Whether this note is what ends the sound, or the sample is. A note whose
+  // sample has already run out has nothing left to release, and fading it there
+  // would only shorten a decay that was meant to be heard.
+  if (endSec < atSec + sampleDurationSec) {
+    // Held flat up to the release, so the fade is the release and not a slope
+    // running from the attack — a quiet note would otherwise be nothing but fade
+    // on a long one.
+    gain.setValueAtTime(level, endSec - fadeOutSec)
+    gain.linearRampToValueAtTime(0, endSec)
+  }
+}
+
+/**
  * Schedule a whole note sequence on one strip, *without* cutting what the strip
  * already has.
  *
@@ -726,12 +797,18 @@ export function scheduleNoteSequence(
     // A zero-length note would be scheduled to stop the moment it starts.
     if (note.lengthSec <= 0) return
 
-    const noteStart = startAtSec + note.startSec
+    // Aligned to the sample grid before anything is derived from it, so that the
+    // envelope, the curve below and the stop at the end are all written against
+    // the same instant rather than three values a fraction of a sample apart.
+    const noteStart = alignToSample(startAtSec + note.startSec, context.sampleRate)
     // How long this note is heard for: what it was drawn as, plus its tail. The
     // guard above still reads `lengthSec` alone — a tail is not a length, so a
     // note drawn with no length is a mistake however far it is extended, while a
     // note drawn short and extended to ring is the ordinary case this is for.
-    const soundSec = soundingSec(note)
+    // Aligned rather than used raw, so that `noteStart + soundSec` is exactly
+    // `noteEnd` and the envelope cannot fade to a different instant than the one
+    // the source stops on.
+    const soundSec = alignToSample(soundingSec(note), context.sampleRate)
     const noteEnd = noteStart + soundSec
 
     // Which recording this note plays is the note's own business, not the
@@ -744,34 +821,12 @@ export function scheduleNoteSequence(
     source.buffer = rendered
 
     // Velocity belongs to the note, so it needs a gain of its own: the strip's
-    // gain is the channel's, and volume, mute and solo all write to that.
+    // gain is the channel's, and volume, mute and solo all write to that. The two
+    // fades on it come from `scheduleVoiceEnvelope` — the same function the
+    // offline renderer calls, so a note in a file opens and closes exactly as this
+    // one does.
     const velocityGain = context.createGain()
-    const level = gainForVelocity(note.velocity)
-    const gain = velocityGain.gain
-
-    // Both fades are bounded by half of what is heard, so that a note shorter
-    // than the two of them together still opens and closes instead of having one
-    // run over the other — which would leave it silent, or ending on a step after
-    // all. Half of the *sounding* length, tail included, so that extending a
-    // clipped note lengthens it rather than lengthening one of its two fades.
-    const fadeInSec = Math.min(VOICE_FADE_IN_SEC, soundSec / 2)
-    const fadeOutSec = Math.min(VOICE_FADE_OUT_SEC, soundSec / 2)
-
-    // Whether this note is what ends the sound, or the sample is. Measured
-    // against the buffer the note actually plays — a re-pitched copy is the same
-    // length as its sample, but only by construction, and this is the copy that
-    // is about to be heard.
-    const cutsSample = noteEnd < noteStart + rendered.duration
-
-    gain.setValueAtTime(0, noteStart)
-    gain.linearRampToValueAtTime(level, noteStart + fadeInSec)
-    if (cutsSample) {
-      // Held flat up to the release, so the fade is the release and not a slope
-      // running from the attack — a quiet note would otherwise be nothing but
-      // fade on a long one.
-      gain.setValueAtTime(level, noteEnd - fadeOutSec)
-      gain.linearRampToValueAtTime(0, noteEnd)
-    }
+    scheduleVoiceEnvelope(velocityGain.gain, note.velocity, noteStart, soundSec, rendered.duration)
 
     // The clip's own volume curve, if this note came from a clip that has one.
     // A node of its own rather than another set of ramps on the one above: the
