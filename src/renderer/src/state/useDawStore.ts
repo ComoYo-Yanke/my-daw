@@ -928,6 +928,24 @@ export type DawState = {
    * follows.
    */
   setClipCurve: (clipId: string, points: CurvePoint[], key?: string) => void
+  /**
+   * Take the stored curve off every clip in `ids`, in one step.
+   *
+   * One action rather than a `setClipCurve` per clip, because a selection is one
+   * edit: clearing three clips is one thing the user did, so it has to be one
+   * Ctrl+Z that takes it back rather than three.
+   *
+   * The curve is set to nothing rather than written as a line at full volume. An
+   * empty curve already means "no automation" everywhere — see `clipCurve` — so
+   * the clip goes back to exactly how it behaved before anything was drawn on
+   * it: drawn, played and exported from its notes' velocities. A line of ones
+   * would be a different state and a louder one — it would turn "take the curve
+   * off" into a volume change.
+   *
+   * A clip that has no curve to begin with is not a change, and a batch with
+   * nothing to clear records nothing.
+   */
+  clearClipCurves: (clipIds: string[]) => void
 
   /** Add an empty lane at the bottom of the timeline. */
   addTrack: () => void
@@ -4254,6 +4272,31 @@ export const useDawStore = create<DawState>((set, get) => {
       set((state) => ({
         playlistClips: state.playlistClips.map((clip) =>
           clip.id === clipId ? { ...clip, volumeCurve } : clip
+        )
+      }))
+    },
+
+    clearClipCurves: (clipIds) => {
+      if (clipIds.length === 0) return
+      const doomed = new Set(clipIds)
+
+      // Only the clips that have something to lose. A batch where none of them
+      // does is not an edit, and putting it on the stack would leave a step that
+      // undoes to the state it was taken in. The key names the clips that
+      // actually changed, so clearing one clip and then another is two steps —
+      // the same rule `removeClips` follows.
+      const changed = get().playlistClips.filter(
+        (clip) => doomed.has(clip.id) && clip.volumeCurve.length > 0
+      )
+      if (changed.length === 0) return
+
+      pushUndo(`clear-curves:${changed.map((clip) => clip.id).join(',')}`)
+      set((state) => ({
+        playlistClips: state.playlistClips.map((clip) =>
+          // `NO_CURVE` rather than a fresh `[]`: it is the one empty curve the
+          // project shares, so a clip that loses its curve compares equal to one
+          // that never had it and the drawing's `useMemo` sees a real change.
+          doomed.has(clip.id) ? { ...clip, volumeCurve: NO_CURVE } : clip
         )
       }))
     },

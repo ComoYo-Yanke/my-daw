@@ -569,6 +569,7 @@ function Playlist(): React.JSX.Element {
   const trimClipStart = useDawStore((state) => state.trimClipStart)
   const removeClips = useDawStore((state) => state.removeClips)
   const duplicateClips = useDawStore((state) => state.duplicateClips)
+  const clearClipCurves = useDawStore((state) => state.clearClipCurves)
   const addTrack = useDawStore((state) => state.addTrack)
   const removeTrack = useDawStore((state) => state.removeTrack)
   const removeEmptyTracks = useDawStore((state) => state.removeEmptyTracks)
@@ -688,6 +689,23 @@ function Playlist(): React.JSX.Element {
     const kept = selectedClipIds.filter((id) => live.has(id))
     return kept.length === selectedClipIds.length ? selectedClipIds : kept
   }, [clips, selectedClipIds])
+
+  /**
+   * Which of the selected clips have a curve stored, which is what 移除曲线 acts
+   * on and what decides whether it is offered at all.
+   *
+   * Only the stored curve counts. A clip with no curve still *draws* one — read
+   * off its notes' velocities, see `clipCurve` — but that one is derived rather
+   * than recorded, so there is nothing there to remove. Going by the drawn curve
+   * instead would offer the button for clips it could do nothing to.
+   *
+   * Derived on every render rather than memoised: it is read for its length and
+   * handed to a click, never compared or passed down, so its identity is nobody's
+   * business — the same reason `selection` above is the one that is memoised.
+   */
+  const clearableCurveIds = clips
+    .filter((clip) => selection.includes(clip.id) && clip.volumeCurve.length > 0)
+    .map((clip) => clip.id)
 
   /**
    * Whether a gesture lands on the grid.
@@ -1203,6 +1221,26 @@ function Playlist(): React.JSX.Element {
           }
         >
           显示曲线
+        </button>
+        {/* Next to the switch, because it is about the same thing: that one
+            decides whether curves are drawn, this one takes them off the
+            selection. Off when there is nothing to take off, and the title says
+            which of the two reasons that is — "you have not selected anything"
+            and "what you selected has nothing on it" want different answers. */}
+        <button
+          type="button"
+          className="pl__add"
+          onClick={() => clearClipCurves(clearableCurveIds)}
+          disabled={clearableCurveIds.length === 0}
+          title={
+            selection.length === 0
+              ? '先选中片段：在空白处拖一个框，或者点一个片段'
+              : clearableCurveIds.length === 0
+                ? '选中的片段都没有画过曲线，没有东西可以移除'
+                : `移除选中的 ${clearableCurveIds.length} 个片段上的曲线，它们回到自己的音量（可 Ctrl+Z 撤销）`
+          }
+        >
+          移除曲线
         </button>
 
         <span className="pl__group">

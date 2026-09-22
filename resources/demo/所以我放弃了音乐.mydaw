@@ -8,6 +8,18 @@
     {
       "id": "dc510de9-7d1d-4f99-ae85-84f1241f5513",
       "name": "Concert Grand",
+      "effects": [
+        {
+          "id": "514bfb2c-ac7e-4c2e-8316-896e1975df9d",
+          "type": "reverb",
+          "enabled": true,
+          "params": {
+            "roomSize": 0.8733333841959636,
+            "damping": 0.7306667073567709,
+            "wet": 0.35866668701171867
+          }
+        }
+      ],
       "volume": 1,
       "pan": 0,
       "muted": false,
