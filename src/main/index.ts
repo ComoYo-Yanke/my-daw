@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, Menu } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, Menu, screen } from 'electron'
 import { readFile, readdir, writeFile } from 'fs/promises'
 import type { Dirent } from 'fs'
 import { basename, extname, join, sep } from 'path'
@@ -297,13 +297,53 @@ async function writeExportFile(data: Uint8Array, path: string): Promise<void> {
   await writeFile(path, Buffer.from(data))
 }
 
+/**
+ * 打开时的窗口大小，以及最小能拖到多小。
+ *
+ * 按屏幕算出来而不是写死：写死的大小只在一块屏上是对的。900x670 摆不下四个窗口，
+ * 而换个大一点的数字，在 1920 宽的屏上是舒服的，在 1366x768 的笔记本上就有一截探出
+ * 屏幕外 —— 而这块屏恰恰是小的那块。工作区（workArea）本身就是 DIP，和 `BrowserWindow`
+ * 收的宽高是同一个单位，所以下面这两个比例在任何缩放比例下说的都是同一件事。
+ *
+ * 上限是给另一头准备的：在 4K 屏上按比例算出来的窗口会占满整个屏幕。到了上限就不再
+ * 变大，要不要最大化由用户自己决定。
+ *
+ * 最小值是面板开始互相抢地方的那条线，并且不超过默认大小 —— 否则在小屏上会算出一个
+ * 「必须比它自己打开时还大」的窗口。
+ */
+const DEFAULT_WINDOW_FRACTION = 0.85
+const MAX_DEFAULT_WINDOW_WIDTH = 1600
+const MAX_DEFAULT_WINDOW_HEIGHT = 1000
+const MIN_WINDOW_WIDTH = 1100
+const MIN_WINDOW_HEIGHT = 700
+
 function createWindow(): void {
+  const { workAreaSize } = screen.getPrimaryDisplay()
+  const width = Math.min(
+    MAX_DEFAULT_WINDOW_WIDTH,
+    Math.round(workAreaSize.width * DEFAULT_WINDOW_FRACTION)
+  )
+  const height = Math.min(
+    MAX_DEFAULT_WINDOW_HEIGHT,
+    Math.round(workAreaSize.height * DEFAULT_WINDOW_FRACTION)
+  )
+
   // Create the browser window.
   const mainWindow = new BrowserWindow({
-    width: 900,
-    height: 670,
+    width,
+    height,
+    minWidth: Math.min(MIN_WINDOW_WIDTH, width),
+    minHeight: Math.min(MIN_WINDOW_HEIGHT, height),
     show: false,
-    ...(process.platform === 'linux' ? { icon } : {}),
+    // 标题栏和任务栏按钮上的那个小图标。
+    //
+    // Windows 不去 exe 里取，而是从这里取：打包出来的程序本来会带上 `build/icon.ico`，
+    // 但开发时跑的是 `node_modules` 里的 electron.exe，没有这一行的话标题栏戴的就是
+    // Electron 的图标，而安装出来的快捷方式戴的是我们的 —— 同一份代码两个样子。
+    //
+    // macOS 不在这里：它的窗口本来就没有标题栏图标，Dock 上的图标来自应用包里的 .icns，
+    // 所以它是唯一被排除的一块，不是因为这一行在那边会出错。
+    ...(process.platform === 'darwin' ? {} : { icon }),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false

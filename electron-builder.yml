@@ -21,6 +21,20 @@ nsis:
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
   createDesktopShortcut: always
+  # Ask where to install, rather than picking for the user.
+  #
+  # NSIS builds a one-click installer by default: it unpacks straight to
+  # %LOCALAPPDATA%\Programs and is over before there is anything to click. Asking
+  # for a directory means giving that up — `allowToChangeInstallationDirectory`
+  # is only read while `oneClick` is off, and electron-builder warns and ignores
+  # it otherwise. These two lines are one decision written twice on purpose.
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  # Per-user unless the chosen directory says otherwise, so an ordinary install
+  # needs no administrator. Picking a protected path such as Program Files still
+  # works: Windows raises its own elevation prompt for it (see `allowElevation`,
+  # which is on by default), so the choice of folder stays the user's.
+  perMachine: false
 mac:
   entitlementsInherit: build/entitlements.mac.plist
   extendInfo:
