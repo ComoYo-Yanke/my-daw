@@ -1134,7 +1134,10 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
           {patternName}
         </span>
         <span className="pr__meta">
-          {sample
+          {/* Nothing is missing on a synth channel: it has no recording to be
+              missing, and the notes below are perfectly playable. That line is a
+              sampler's, and it appears exactly when a sampler's sample is gone. */}
+          {sample !== undefined || channel.type === 'synth'
             ? `${notes.length} 个音符 · ${bpm} BPM · ${lengthBars} 小节 · ${sequenceLengthSec.toFixed(2)}s`
             : '采样缺失'}
         </span>

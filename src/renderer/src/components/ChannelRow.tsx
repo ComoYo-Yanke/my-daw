@@ -2,6 +2,7 @@ import { useState } from 'react'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu'
 import Knob from './Knob'
 import SamplePicker from './SamplePicker'
+import SynthThumbnail from './SynthThumbnail'
 import WaveformThumbnail from './WaveformThumbnail'
 import { useChannelLevel } from '../hooks/useChannelLevel'
 import { useStepCursor } from '../hooks/useStepCursor'
@@ -14,6 +15,8 @@ import {
   useDawStore
 } from '../state/useDawStore'
 import type { Channel, Playback, Sample } from '../state/useDawStore'
+import { EFFECT_TYPE_LABELS } from '../types/effect'
+import { WAVEFORM_LABELS } from '../types/synth'
 
 type ChannelRowProps = {
   channel: Channel
@@ -40,12 +43,45 @@ function formatPan(value: number): string {
   return 'C'
 }
 
+/** What a channel has under its name, in the row: what it plays or what it is. */
+function channelDescription(channel: Channel, sample: Sample | undefined): string {
+  if (channel.type !== 'synth') {
+    // A sampler whose file went missing says so rather than showing a duration
+    // it does not have.
+    return sample === undefined ? '采样缺失' : formatDuration(sample.durationSec)
+  }
+  const count = channel.synth.oscCount === 2 ? '2 振荡器' : '1 振荡器'
+  return `${WAVEFORM_LABELS[channel.synth.waveform]} · ${count}`
+}
+
+/**
+ * What the FX button says on hover.
+ *
+ * It spells the chain out rather than just counting it: the question the button
+ * raises is what this channel has between it and the fader, and "2" does not
+ * answer that. Bypassed effects are listed and marked as bypassed rather than
+ * left out — they are still on the chain, and a tooltip that disagreed with the
+ * dimmed card on the panel would be the wrong one of the two.
+ *
+ * The order is the chain's own, which is the point: it is read as a signal path.
+ */
+function effectsTitle(channel: Channel): string {
+  if (channel.effects.length === 0) return '打开效果链，加混响、延迟或失真'
+  const parts = channel.effects.map((effect) => {
+    const label = EFFECT_TYPE_LABELS[effect.type]
+    return effect.enabled ? label : `${label}（已关）`
+  })
+  return `效果链：${parts.join(' → ')}`
+}
+
 /**
  * One channel of the rack.
  *
  * The waveform is the play target and the name is the rename target on purpose:
  * if the name also played the sample, the first click of every double-click
- * would fire a note.
+ * would fire a note. The same goes for what the waveform *is* — a peak envelope
+ * on a sampler and a drawn cycle on a synth — since both are just the picture on
+ * the button.
  *
  * The step grid is not here. It is the 步进 window's, and what this row keeps of
  * it is the count in the metadata line — enough to see at a glance whether a
@@ -62,6 +98,9 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
   const duplicateChannel = useDawStore((state) => state.duplicateChannel)
   const removeChannel = useDawStore((state) => state.removeChannel)
   const openPianoRoll = useDawStore((state) => state.openPianoRoll)
+  const openSynthPanel = useDawStore((state) => state.openSynthPanel)
+  const openEffectsPanel = useDawStore((state) => state.openEffectsPanel)
+  const effectsOpen = useDawStore((state) => state.effectsPanelChannelId === channel.id)
   const playChannelSequence = useDawStore((state) => state.playChannelSequence)
   const stopSequence = useDawStore((state) => state.stopSequence)
   const channelPlayback = useDawStore((state) => selectChannelPlayback(state, channel.id))
@@ -130,7 +169,26 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
   }
 
   /**
-   * Double-clicking the channel opens its Piano Roll.
+   * What pressing the button will do.
+   *
+   * A synth's audition is one note rather than a recording, so it says 试听 too
+   * and leaves the "what" to the metadata line above — which is where the
+   * waveform and the oscillator count already are.
+   */
+  const waveTitle = ((): string => {
+    if (channel.type !== 'synth' && sample === undefined) return '采样缺失'
+    if (notes.length > 0) {
+      return sequencePlaying ? '停止播放音符序列' : `播放 ${notes.length} 个音符的序列`
+    }
+    return sample === undefined ? `试听「${channel.name}」` : `试听 ${sample.name}`
+  })()
+
+  /**
+   * Double-clicking the channel opens the panel that channel has.
+   *
+   * Which one is the whole of the difference between the two kinds here: a synth
+   * has no recording, so the thing worth opening on it is the sound it makes
+   * instead — and its roll is still reachable, from the menu below.
    *
    * The controls keep their double-clicks — the name renames, the knobs reset —
    * and the buttons are single-click actions, so anything that is already one of
@@ -138,7 +196,11 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
    */
   const handleDoubleClick = (event: React.MouseEvent<HTMLDivElement>): void => {
     if ((event.target as HTMLElement).closest('.channel__name, .knob, button') !== null) return
-    openPianoRoll(channel.id)
+    if (channel.type === 'synth') {
+      openSynthPanel(channel.id)
+    } else {
+      openPianoRoll(channel.id)
+    }
   }
 
   /**
@@ -149,13 +211,33 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
    * are filed under its id in every pattern — and 更换音色 changes what every
    * pattern's use of it sounds like. Delete is one undo step, which is what it
    * relies on instead of asking first; a sound change is one too.
+   *
+   * A synth row's menu says so instead: 更换音色 is a sampler's idea — there is no
+   * recording to swap — so it is replaced by the panels that channel can open.
+   * Double-click reaches the parameter panel already, and the roll does not have a
+   * double-click left over for it, which is why the roll is listed here.
+   *
+   * 效果器 is the one entry both menus carry, and it is the same act on either
+   * kind: a reverb is not an instrument, so there is nothing about it that has to
+   * be said twice.
    */
-  const menuItems: ContextMenuItem[] = [
-    { label: '重命名', run: () => setDraft(channel.name) },
-    { label: '复制', run: () => duplicateChannel(channel.id) },
-    { label: '更换音色…', run: () => setPicking(true) },
-    { label: '删除', danger: true, run: () => removeChannel(channel.id) }
-  ]
+  const menuItems: ContextMenuItem[] =
+    channel.type === 'synth'
+      ? [
+          { label: '重命名', run: () => setDraft(channel.name) },
+          { label: '复制', run: () => duplicateChannel(channel.id) },
+          { label: '合成器参数', run: () => openSynthPanel(channel.id) },
+          { label: '效果器', run: () => openEffectsPanel(channel.id) },
+          { label: '打开钢琴卷帘', run: () => openPianoRoll(channel.id) },
+          { label: '删除', danger: true, run: () => removeChannel(channel.id) }
+        ]
+      : [
+          { label: '重命名', run: () => setDraft(channel.name) },
+          { label: '复制', run: () => duplicateChannel(channel.id) },
+          { label: '更换音色…', run: () => setPicking(true) },
+          { label: '效果器', run: () => openEffectsPanel(channel.id) },
+          { label: '删除', danger: true, run: () => removeChannel(channel.id) }
+        ]
 
   return (
     <>
@@ -196,28 +278,21 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
             />
           )}
           <span className="channel__meta">
-            {sample ? formatDuration(sample.durationSec) : '采样缺失'}
+            {channelDescription(channel, sample)}
             {notes.length > 0 ? ` · ${notes.length} 音符` : ''}
             {activeSteps > 0 ? ` · ${activeSteps} 步进` : ''}
           </span>
           <span className="channel__meter" ref={meterRef} aria-hidden="true" />
         </div>
 
-        <button
-          type="button"
-          className="channel__wave"
-          onClick={handlePlayClick}
-          title={
-            sample === undefined
-              ? '采样缺失'
-              : notes.length > 0
-                ? sequencePlaying
-                  ? '停止播放音符序列'
-                  : `播放 ${notes.length} 个音符的序列`
-                : `试听 ${sample.name}`
-          }
-        >
-          {sample ? (
+        <button type="button" className="channel__wave" onClick={handlePlayClick} title={waveTitle}>
+          {channel.type === 'synth' ? (
+            <SynthThumbnail
+              waveform={channel.synth.waveform}
+              oscCount={channel.synth.oscCount}
+              isPlaying={isSounding}
+            />
+          ) : sample ? (
             <WaveformThumbnail peaks={sample.peaks} isPlaying={isSounding} />
           ) : (
             <span className="channel__missing">—</span>
@@ -275,6 +350,23 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
             <rect x="4.5" y="4.5" width="7" height="7" rx="1" fill="none" stroke="currentColor" />
           </svg>
         </button>
+
+        {/* The one door into the effect chain. The count is on the button rather
+            than in the metadata line above, because a chain is a thing you go and
+            look at: what matters from here is whether there is one to look at. */}
+        <button
+          type="button"
+          className="channel__fx"
+          aria-pressed={effectsOpen}
+          onClick={() => openEffectsPanel(channel.id)}
+          title={effectsTitle(channel)}
+          aria-label="效果器"
+        >
+          FX
+          {channel.effects.length > 0 && (
+            <span className="channel__fx-count">{channel.effects.length}</span>
+          )}
+        </button>
       </div>
 
       {/* Outside the row, so a right-click inside the menu does not bubble back
@@ -283,7 +375,10 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
         <ContextMenu x={menu.x} y={menu.y} items={menuItems} onClose={() => setMenu(null)} />
       )}
 
-      {picking && (
+      {/* `picking` is only ever set from a sampler's menu, so the second test is
+          for the type checker's benefit — and it lets `[channel]` be a list of
+          samplers, which is what the dialog can be pointed at. */}
+      {picking && channel.type !== 'synth' && (
         <SamplePicker
           channels={[channel]}
           context={`换掉「${channel.name}」的采样。音色是通道的属性，所以这个通道在所有 Pattern 里的音色都会跟着变；音符、步进、音量和声像都不动。`}

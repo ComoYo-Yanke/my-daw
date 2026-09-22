@@ -3,7 +3,14 @@ import { create } from 'zustand'
 export type WindowMode = 'docked' | 'floating'
 
 /** Every panel that can be a window. The set is closed: these are the panels. */
-export type WindowId = 'channel-rack' | 'piano-roll' | 'playlist' | 'sample-browser' | 'steps'
+export type WindowId =
+  | 'channel-rack'
+  | 'piano-roll'
+  | 'playlist'
+  | 'sample-browser'
+  | 'steps'
+  | 'synth-panel'
+  | 'effects-panel'
 
 /** A rectangle in viewport coordinates: the same space `getBoundingClientRect` uses. */
 export type Rect = { x: number; y: number; width: number; height: number }
@@ -134,6 +141,34 @@ const WINDOW_DEFS: WindowDef[] = [
     position: { x: 120, y: 56 },
     size: { width: 900, height: 520 },
     closed: true
+  },
+  {
+    id: 'synth-panel',
+    title: '合成器',
+    // One of the two floating windows. The roll wants the whole workspace width
+    // to be read, but a parameter panel is a handful of knobs you keep beside the
+    // rack while you turn them — and the channel it belongs to has to stay
+    // visible, or the panel is a thing you cannot aim at anything.
+    //
+    // The layout presets still give it a slot and still dock it, like every other
+    // window there: a preset is a whole arrangement, and one that left a window
+    // where the last layout put it would not come out the same every time.
+    // Floating is where it starts, not a state it defends.
+    mode: 'floating',
+    position: { x: 300, y: 180 },
+    size: { width: 560, height: 420 },
+    closed: true
+  },
+  {
+    id: 'effects-panel',
+    title: '效果器',
+    // Floating for the same reason the synth's is, and offset from it so that a
+    // channel with both open — which is the whole point of the two being separate
+    // windows — does not put one exactly on top of the other.
+    mode: 'floating',
+    position: { x: 360, y: 240 },
+    size: { width: 520, height: 460 },
+    closed: true
   }
 ]
 
@@ -214,7 +249,15 @@ export const LAYOUT_PRESETS: LayoutPreset[] = [
       playlist: { x: 0, y: 0.48, width: 0.62, height: 0.52, open: true },
       'sample-browser': { x: 0.62, y: 0, width: 0.38, height: 1, open: false },
       'piano-roll': { x: 0.62, y: 0, width: 0.38, height: 1, open: false },
-      steps: { x: 0, y: 0.48, width: 1, height: 0.52, open: false }
+      steps: { x: 0, y: 0.48, width: 1, height: 0.52, open: false },
+      // Over the rack, not beside it: it is opened from a channel and docks back
+      // onto the thing it was opened from.
+      'synth-panel': { x: 0.05, y: 0.05, width: 0.5, height: 0.5, open: false },
+      // Asked for on top of the synth panel in this layout, so that whichever is
+      // opened second docks where the first one already is. Applying a preset
+      // docks everything, and a rack-wide layout has nowhere else to put a panel
+      // that is opened from a channel.
+      'effects-panel': { x: 0.32, y: 0.2, width: 0.5, height: 0.6, open: false }
     }
   },
   {
@@ -226,7 +269,12 @@ export const LAYOUT_PRESETS: LayoutPreset[] = [
       'piano-roll': { x: 0, y: 0.34, width: 1, height: 0.66, open: true },
       playlist: { x: 0, y: 0.34, width: 1, height: 0.66, open: false },
       'sample-browser': { x: 0.62, y: 0, width: 0.38, height: 1, open: false },
-      steps: { x: 0, y: 0.34, width: 1, height: 0.66, open: false }
+      steps: { x: 0, y: 0.34, width: 1, height: 0.66, open: false },
+      // Over the rack band, so the roll underneath keeps its room: this layout is
+      // for editing notes, and a parameter panel that covered them would be in
+      // the way of the one thing the layout is for.
+      'synth-panel': { x: 0.65, y: 0.02, width: 0.33, height: 0.3, open: false },
+      'effects-panel': { x: 0.32, y: 0.02, width: 0.33, height: 0.3, open: false }
     }
   },
   {
@@ -238,7 +286,10 @@ export const LAYOUT_PRESETS: LayoutPreset[] = [
       'sample-browser': { x: 0.58, y: 0, width: 0.42, height: 1, open: true },
       playlist: { x: 0, y: 0.5, width: 1, height: 0.5, open: false },
       'piano-roll': { x: 0, y: 0.34, width: 1, height: 0.66, open: false },
-      steps: { x: 0, y: 0.5, width: 1, height: 0.5, open: false }
+      steps: { x: 0, y: 0.5, width: 1, height: 0.5, open: false },
+      // Under the rack, which owns the whole left column here.
+      'synth-panel': { x: 0.05, y: 0.55, width: 0.48, height: 0.42, open: false },
+      'effects-panel': { x: 0.3, y: 0.5, width: 0.45, height: 0.48, open: false }
     }
   }
 ]

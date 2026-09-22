@@ -4,7 +4,7 @@ import { LIBRARY } from '../audio/library'
 import {
   ROOT_CATEGORY_LABEL,
   useDawStore,
-  type Channel,
+  type SamplerChannel,
   type UserSample
 } from '../state/useDawStore'
 
@@ -22,8 +22,11 @@ type SamplePickerProps = {
    * Never empty: a pattern that uses no channels has its menu row disabled, and a
    * channel's own row always has itself. One entry means no selector is drawn —
    * there is nothing to choose between.
+   *
+   * Samplers only: there is no recording in a synth channel to replace, so a
+   * synth is never one of the channels this can be pointed at.
    */
-  channels: Channel[]
+  channels: SamplerChannel[]
   /** One line saying what the swap is being made for, and what it will affect. */
   context: string
   onClose: () => void

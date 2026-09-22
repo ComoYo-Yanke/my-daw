@@ -7,8 +7,17 @@
 //
 // Graph, per channel:
 //
-//   source -> GainNode -> [GainNode] -> GainNode -> StereoPannerNode -> masterGain
-//  (per voice) (velocity)   (curve)   (per channel, persistent)       (app-wide)
+//   source -> GainNode -> [GainNode] -> GainNode -> [effects] -> GainNode
+//  (per voice) (velocity)   (curve)     (strip input)          (per channel)
+//                                          -> StereoPannerNode -> masterGain
+//                                                                    (app-wide)
+//
+// The strip's input gain is where every voice of a channel arrives, and it is a
+// node of its own rather than the channel's fader so that the effect chain has
+// somewhere to be inserted. Rebuilding the chain therefore disconnects nothing
+// that is currently sounding: the input is upstream of everything the chain
+// touches, so a note halfway through a reverb keeps going while the reverb
+// underneath it is replaced.
 //
 // The master gain is the app's own output level rather than a channel's: it sits
 // after every strip, so turning it down turns everything down together and leaves
@@ -39,7 +48,9 @@
 
 import { SimpleFilter, SoundTouch } from 'soundtouchjs'
 
+import { createEffectChain, type EffectChain } from './effects'
 import { curveValueAt, type CurvePoint } from '../types/curve'
+import type { Effect } from '../types/effect'
 import { soundingSec, type Note } from '../types/note'
 import { voiceForPitch, type SampleZone } from '../types/sample'
 
@@ -93,7 +104,16 @@ export async function decodeAudioData(data: ArrayBuffer): Promise<AudioBuffer> {
  * live here so `stopStrip` cuts a voice whole.
  */
 type Voice = {
-  source: AudioBufferSourceNode
+  /**
+   * What is making the sound, and what gets stopped to cut it.
+   *
+   * Wide enough for either instrument: a sampler's `AudioBufferSourceNode` and a
+   * synth's `OscillatorNode` are both scheduled sources, and both are started and
+   * stopped by time and report `onended`. What the strip does with a voice —
+   * track it, cut it, wait for the last one — it does through this and nothing
+   * narrower, which is why it does not have to know which kind it is holding.
+   */
+  source: AudioScheduledSourceNode
   /** Nodes this voice owns alone, disconnected when it ends or is cut. */
   tail: AudioNode[]
 }
@@ -103,6 +123,17 @@ type Voice = {
  * the voices currently sounding through it.
  */
 export type ChannelStrip = {
+  /**
+   * Where every voice of this channel arrives, and where the effect chain is
+   * inserted.
+   *
+   * Unity, and not the channel's volume: volume, mute and solo are the `gain`
+   * below, which sits *after* the effects. That ordering is what makes a fader
+   * a fader — it turns the channel down along with the reverb tail it produced —
+   * and it is also why the chain can be rebuilt without touching anything that
+   * is currently sounding.
+   */
+  input: GainNode
   gain: GainNode
   panner: StereoPannerNode
   /**
@@ -114,6 +145,8 @@ export type ChannelStrip = {
    * its moment comes, and this reads the silence, which is the honest answer.
    */
   analyser: AnalyserNode
+  /** This channel's effect chain. Empty until the mix is applied. */
+  effects: EffectChain
   voices: Set<Voice>
   /** Called on the silent <-> sounding edges, so the UI can light an indicator. */
   onActiveChange: (active: boolean) => void
@@ -178,17 +211,34 @@ export function createStrip(
 ): ChannelStrip {
   const context = getAudioContext()
 
+  const input = context.createGain()
   const gain = context.createGain()
   const panner = context.createStereoPanner()
   const analyser = context.createAnalyser()
   analyser.fftSize = METER_WINDOW_FRAMES
+  input.gain.value = 1
   gain.gain.value = 0
   panner.pan.value = 0
+
+  // The chain starts empty and is therefore a straight wire from the input to
+  // the fader; the effects arrive with the first mix. Built here rather than on
+  // the first effect added, so that adding one only ever writes into a chain
+  // that is already in the signal path and never has to splice itself in.
+  const effects = createEffectChain(context, input, gain, [])
+
   gain.connect(panner)
   panner.connect(analyser)
   analyser.connect(getMasterGain())
 
-  const strip: ChannelStrip = { gain, panner, analyser, voices: new Set(), onActiveChange }
+  const strip: ChannelStrip = {
+    input,
+    gain,
+    panner,
+    analyser,
+    effects,
+    voices: new Set(),
+    onActiveChange
+  }
   strips.set(channelId, strip)
   return strip
 }
@@ -209,6 +259,20 @@ export function setStripPan(strip: ChannelStrip, value: number): void {
   const now = getAudioContext().currentTime
   strip.panner.pan.cancelScheduledValues(now)
   strip.panner.pan.setTargetAtTime(value, now, RAMP_SEC)
+}
+
+/**
+ * Hand a channel its effect chain, in order.
+ *
+ * Like `setStripGain` and `setStripPan`, this describes the state the channel
+ * should be in rather than asking for a change to it, and like them it is safe
+ * to call with the value it already has: the chain works out for itself whether
+ * anything about the list demands a rebuild, and writes the parameters into the
+ * nodes it already has when it does not. That is what makes a knob drag — which
+ * calls this once per frame — a parameter ramp rather than a storm of rebuilds.
+ */
+export function setStripEffects(strip: ChannelStrip, effects: Effect[]): void {
+  strip.effects.apply(effects)
 }
 
 /**
@@ -284,10 +348,14 @@ export function setMasterGain(value: number): void {
  * `onFinished` is passed for the last voice of a sequence only: its `onended`
  * then reports the sequence's real ending, which saves the transport from
  * polling the clock to notice that playback is over.
+ *
+ * Exported because the synth's scheduler lives in its own module and needs
+ * exactly this: a strip that knows a voice is sounding through it, whether that
+ * voice is a sample or an oscillator is not the strip's business.
  */
-function trackVoice(
+export function trackVoice(
   strip: ChannelStrip,
-  source: AudioBufferSourceNode,
+  source: AudioScheduledSourceNode,
   onFinished?: () => void,
   tail: AudioNode[] = []
 ): void {
@@ -523,7 +591,7 @@ export function triggerStrip(strip: ChannelStrip, buffer: AudioBuffer, pitch = 0
 
   const source = context.createBufferSource()
   source.buffer = pitchShiftedBuffer(buffer, pitch)
-  source.connect(strip.gain)
+  source.connect(strip.input)
   trackVoice(strip, source)
 
   source.start(context.currentTime)
@@ -726,10 +794,10 @@ export function scheduleNoteSequence(
 
     source.connect(velocityGain)
     if (automation === null) {
-      velocityGain.connect(strip.gain)
+      velocityGain.connect(strip.input)
     } else {
       velocityGain.connect(automation)
-      automation.connect(strip.gain)
+      automation.connect(strip.input)
     }
 
     // Only the last note can report the end: notes are ordered, so the last one
@@ -744,11 +812,22 @@ export function scheduleNoteSequence(
   })
 }
 
-/** One channel's notes, ready to be scheduled. */
+/**
+ * One channel's notes, ready to be scheduled.
+ *
+ * The notes come with a way to play them rather than with an instrument, because
+ * there are two kinds of instrument now: a sampler hands over the recordings a
+ * note may land on, and a synth hands over nothing but its parameters. Which one
+ * a channel is, is the channel's business — this is the seam that keeps it
+ * there, so the song can be run without knowing what is under it.
+ *
+ * `play` is expected to cut the strip first, as `playNoteSequence` does: song
+ * playback is replacing whatever was sounding, not adding to it.
+ */
 export type ScheduledChannel = {
   strip: ChannelStrip
-  /** The channel's whole instrument — see `scheduleNoteSequence`. */
-  zones: SampleZone[]
+  /** Hand these notes to the audio clock on this channel's strip. */
+  play: (notes: SongNote[], atSec: number, onFinished: () => void) => void
   /** `SongNote`s, because they come off the song timeline — see that type. */
   notes: SongNote[]
 }
@@ -757,8 +836,8 @@ export type ScheduledChannel = {
  * Schedule a whole song: every channel's own note timeline, all at once.
  *
  * Song mode flattens the arrangement into one timeline per channel before it
- * gets here, so this is only "run several channels together" — each still goes
- * through `playNoteSequence`, and each channel can therefore sound a chord.
+ * gets here, so this is only "run several channels together" — each still plays
+ * through its own scheduler, and each channel can therefore sound a chord.
  *
  * `onFinished` fires once, when the last channel falls silent, which is what
  * lets the transport stop itself without watching the clock.
@@ -784,7 +863,7 @@ export function playArrangement(
   }
 
   for (const channel of audible) {
-    playNoteSequence(channel.strip, channel.zones, channel.notes, startAtSec, handleChannelFinished)
+    channel.play(channel.notes, startAtSec, handleChannelFinished)
   }
 }
 
@@ -824,6 +903,10 @@ export function releaseStrip(channelId: string): void {
   const strip = strips.get(channelId)
   if (!strip) return
   stopStrip(strip)
+  // Releases the chain's own nodes along with the input it was fed from, so a
+  // channel that goes away takes its effects with it rather than leaving a
+  // convolver wired to the destination for the rest of the session.
+  strip.effects.dispose()
   strip.gain.disconnect()
   strip.panner.disconnect()
   strips.delete(channelId)

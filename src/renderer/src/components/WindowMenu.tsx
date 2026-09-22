@@ -21,6 +21,8 @@ type Entry = {
   open: boolean
   /** Greyed out when there is nothing for the window to show. */
   disabled: boolean
+  /** What to say about that, since the two windows want different things. */
+  disabledHint?: string
   run: () => void
 }
 
@@ -40,6 +42,12 @@ function WindowMenu(): React.JSX.Element {
   const pianoRollChannelId = useDawStore((state) => state.pianoRollChannelId)
   const openPianoRoll = useDawStore((state) => state.openPianoRoll)
   const closePianoRoll = useDawStore((state) => state.closePianoRoll)
+  const synthPanelChannelId = useDawStore((state) => state.synthPanelChannelId)
+  const openSynthPanel = useDawStore((state) => state.openSynthPanel)
+  const closeSynthPanel = useDawStore((state) => state.closeSynthPanel)
+  const effectsPanelChannelId = useDawStore((state) => state.effectsPanelChannelId)
+  const openEffectsPanel = useDawStore((state) => state.openEffectsPanel)
+  const closeEffectsPanel = useDawStore((state) => state.closeEffectsPanel)
 
   const toggleWindow = useWindowStore((state) => state.toggleWindow)
   const resetLayout = useWindowStore((state) => state.resetLayout)
@@ -50,6 +58,11 @@ function WindowMenu(): React.JSX.Element {
   const listOpen = useOpen('playlist')
   const libraryOpen = useOpen('sample-browser')
   const stepsOpen = useOpen('steps')
+  const synthOpen = useOpen('synth-panel')
+  const effectsOpen = useOpen('effects-panel')
+
+  /** Every synth channel in the rack, which is the set this panel can be pointed at. */
+  const synthChannels = channels.filter((channel) => channel.type === 'synth')
 
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -88,6 +101,38 @@ function WindowMenu(): React.JSX.Element {
     }
     const channelId = pianoRollChannelId ?? channels[0]?.id
     if (channelId !== undefined) openPianoRoll(channelId)
+  }
+
+  /**
+   * What picking the synth panel does, and the same shape as `toggleRoll`: the
+   * window is useless without a channel to point at, so opening it binds to the
+   * channel that was open, or to the first synth in the rack.
+   *
+   * It stops no transport on the way past, unlike the roll — see `openSynthPanel`.
+   */
+  const toggleSynthPanel = (): void => {
+    if (synthOpen) {
+      closeSynthPanel()
+      return
+    }
+    const channelId = synthPanelChannelId ?? synthChannels[0]?.id
+    if (channelId !== undefined) openSynthPanel(channelId)
+  }
+
+  /**
+   * What picking the effect chain does — `toggleSynthPanel`'s shape again, with
+   * one difference that is the whole of why the two windows are separate: the
+   * fallback is the first channel of *any* kind. There is no such thing as a
+   * sampler's parameters, which is what makes the synth panel picky; there is
+   * very much such a thing as a sampler's reverb.
+   */
+  const toggleEffectsPanel = (): void => {
+    if (effectsOpen) {
+      closeEffectsPanel()
+      return
+    }
+    const channelId = effectsPanelChannelId ?? channels[0]?.id
+    if (channelId !== undefined) openEffectsPanel(channelId)
   }
 
   /**
@@ -130,6 +175,7 @@ function WindowMenu(): React.JSX.Element {
       label: windowTitle('piano-roll'),
       open: rollOpen,
       disabled: !rollOpen && channels.length === 0,
+      disabledHint: '先在 Channel Rack 里建一个通道',
       run: toggleRoll
     },
     {
@@ -152,6 +198,27 @@ function WindowMenu(): React.JSX.Element {
       open: stepsOpen,
       disabled: false,
       run: () => toggleWindow('steps')
+    },
+    {
+      id: 'synth-panel',
+      label: windowTitle('synth-panel'),
+      open: synthOpen,
+      // Unlike the roll, which can be pointed at any channel, this one needs a
+      // synth channel specifically: there is no such thing as a sampler's
+      // parameters.
+      disabled: !synthOpen && synthChannels.length === 0,
+      disabledHint: '先建一个合成器通道（Channel Rack 里的「+ 合成器」）',
+      run: toggleSynthPanel
+    },
+    {
+      id: 'effects-panel',
+      label: windowTitle('effects-panel'),
+      open: effectsOpen,
+      // Any channel will do — see `toggleEffectsPanel` — so this is the roll's
+      // condition rather than the synth panel's.
+      disabled: !effectsOpen && channels.length === 0,
+      disabledHint: '先在 Channel Rack 里建一个通道',
+      run: toggleEffectsPanel
     }
   ]
 
@@ -177,7 +244,7 @@ function WindowMenu(): React.JSX.Element {
               aria-checked={entry.open}
               className="file-menu__item"
               disabled={entry.disabled}
-              title={entry.disabled ? '先在 Channel Rack 里建一个通道' : undefined}
+              title={entry.disabled ? entry.disabledHint : undefined}
               onClick={() => entry.run()}
             >
               <span>{entry.label}</span>

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import ConfirmDialog from './ConfirmDialog'
 import ContextMenu, { type ContextMenuItem } from './ContextMenu'
 import SamplePicker from './SamplePicker'
-import { useDawStore, type Channel, type Pattern } from '../state/useDawStore'
+import { useDawStore, type Pattern, type SamplerChannel } from '../state/useDawStore'
 import { selectWindowOpen, useWindowStore } from '../state/useWindowStore'
 import { EMPTY_STEPS, hasSteps } from '../types/step'
 
@@ -80,7 +80,7 @@ function PatternBar(): React.JSX.Element {
   }
 
   /**
-   * Which channels a pattern actually plays.
+   * Which of a pattern's channels have a sample to change.
    *
    * The union of the two ways a pattern can address the rack — the notes it holds
    * for a channel, and the steps it has switched on for one — because either of
@@ -88,13 +88,16 @@ function PatternBar(): React.JSX.Element {
    * sound changed. Rack order, so the list reads the way the rack does.
    *
    * A channel whose entry is nothing but steps that are off is not listed: the
-   * entry exists, but this pattern never sounds it.
+   * entry exists, but this pattern never sounds it. A synth is not listed either,
+   * and not only because swapping its 音色 would be meaningless — 更换音色 is a
+   * sampler's idea, and this dialog is the only thing the row opens.
    */
-  const usedChannels = (pattern: Pattern): Channel[] =>
+  const usedChannels = (pattern: Pattern): SamplerChannel[] =>
     channels.filter(
-      (channel) =>
-        (pattern.notesByChannel[channel.id]?.length ?? 0) > 0 ||
-        hasSteps(pattern.stepsByChannel[channel.id] ?? EMPTY_STEPS, channel.stepCount)
+      (channel): channel is SamplerChannel =>
+        channel.type === 'sampler' &&
+        ((pattern.notesByChannel[channel.id]?.length ?? 0) > 0 ||
+          hasSteps(pattern.stepsByChannel[channel.id] ?? EMPTY_STEPS, channel.stepCount))
     )
 
   const menuItems = (pattern: Pattern): ContextMenuItem[] => [

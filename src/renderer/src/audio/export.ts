@@ -6,12 +6,27 @@
 //
 // Graph per channel, mirroring `engine.ts` exactly:
 //
-//   AudioBufferSourceNode -> GainNode -> [GainNode] -> GainNode -> StereoPannerNode -> master
-//        (per note)        (velocity)   (curve)    (channel strip)
+//   AudioBufferSourceNode -> GainNode -> [GainNode] -> GainNode -> [effects] -> GainNode
+//        (per note)        (velocity)   (curve)     (strip input)             (channel)
+//                                                       -> StereoPannerNode -> master
 //
-// The project has no effect nodes. A channel's chain is a gain and a panner and
-// nothing else, so "wire up the effects" is those two, copied across holding the
-// values they hold right now — which is what makes the export sound like what
+// A synth channel is the same picture with a different voice in it — its own
+// whole chain comes from `buildSynthVoice`, the function the live engine calls,
+// so a synth export cannot drift from a synth playback:
+//
+//   Oscillator(s) -> BiquadFilter -> GainNode(ADSR) -> [GainNode] -> strip -> master
+//                                                     (curve)
+//
+// The effects are the live ones, from `createEffectChain` — handed an
+// OfflineAudioContext rather than the live AudioContext. That context parameter
+// is the whole of how a reverb can be exported without a second implementation of
+// it existing to keep in step, and it is why the impulse response in the file is
+// generated from the same settings by the same code as the one that was heard.
+// There is no knob to turn mid-render, so each chain is built from the settings
+// the channel holds at that moment and is never written to again.
+//
+// Everything else on a strip is a value rather than a shape, and is copied across
+// holding what it holds right now — which is what makes the export sound like what
 // was on screen. A clip's volume curve is the one thing that is not a value but a
 // shape, and it is copied across as a shape: the same `scheduleGainCurve` the
 // live engine calls, so a fade written on the timeline fades the same way in the
@@ -24,9 +39,13 @@
 
 import { Mp3Encoder } from '@breezystack/lamejs'
 
+import { createEffectChain } from './effects'
 import { gainForVelocity, pitchShiftedBuffer, scheduleGainCurve, type SongNote } from './engine'
+import { buildSynthVoice } from './synth'
+import type { Effect } from '../types/effect'
 import { soundingSec } from '../types/note'
 import { voiceForPitch, type SampleZone } from '../types/sample'
+import type { SynthParams } from '../types/synth'
 
 /** What an export is written as. */
 export type ExportFormat = 'wav' | 'mp3'
@@ -57,17 +76,41 @@ export type ExportSettings = RenderSettings & {
   tailSec: number
 }
 
-/** One channel's part of the mix. */
+/**
+ * One channel's part of the mix.
+ *
+ * The invariants are in the type as a union, because the two kinds of channel do
+ * not render the same way at all: a sampler picks a recording per note and shifts
+ * it, and a synth builds an oscillator chain per note. `kind` is what says which
+ * of those the render is looking at.
+ */
 export type ExportVoice = {
-  /** The channel's whole instrument, zones and all — see `voiceForPitch`. */
-  zones: SampleZone[]
   /** The channel's own gain, with mute and solo already folded in. */
   gain: number
   /** -1 to 1. */
   pan: number
+  /**
+   * The channel's effect chain, in order, bypassed effects included.
+   *
+   * The chain itself is what decides what a bypassed effect means, so an export
+   * is not handed a filtered list: it hands over what the channel holds and gets
+   * the same answer playback gave.
+   */
+  effects: Effect[]
   /** Notes in seconds, from the start of the song, each carrying its clip's curve. */
   notes: SongNote[]
-}
+} & (
+  | {
+      kind: 'sampler'
+      /** The channel's whole instrument, zones and all — see `voiceForPitch`. */
+      zones: SampleZone[]
+    }
+  | {
+      kind: 'synth'
+      /** The whole instrument, in this case: ten numbers and no recording. */
+      params: SynthParams
+    }
+)
 
 export type ExportStage = 'prepare' | 'render' | 'encode'
 
@@ -140,16 +183,38 @@ export async function renderMix(
     const notes = voice.notes.filter((note) => note.lengthSec > 0)
     if (notes.length === 0) continue
 
-    // The strip outlives the notes the way it does live: one gain and one panner
-    // for the channel, with every voice of it hanging off the same pair.
+    // The strip outlives the notes the way it does live: an input, a gain and a
+    // panner for the channel, with every voice of it hanging off the same set.
+    const stripInput = offline.createGain()
+    stripInput.gain.value = 1
     const stripGain = offline.createGain()
     stripGain.gain.value = voice.gain
     const panner = offline.createStereoPanner()
     panner.pan.value = Math.min(Math.max(voice.pan, -1), 1)
+
+    // Between the input and the gain, which is where the live strip puts it — so
+    // the channel's volume is applied after its effects in the file as well, and
+    // a quiet channel is a quiet reverb tail rather than a loud one turned down
+    // afterwards.
+    createEffectChain(offline, stripInput, stripGain, voice.effects)
+
     stripGain.connect(panner)
     panner.connect(master)
 
     for (const note of notes) {
+      // Both kinds of voice hang off the same node, which is where the clip's
+      // curve sits — see `noteTarget`.
+      const target = noteTarget(offline, stripInput, note)
+
+      if (voice.kind === 'synth') {
+        // The synth's own graph, note for note the one the live engine builds —
+        // which is why the same function is called from both. Nothing extra goes
+        // on top: velocity is already the height of the envelope, and the curve
+        // above is the only thing that multiplies it.
+        buildSynthVoice(offline, voice.params, note, note.startSec).output.connect(target)
+        continue
+      }
+
       // Same pick the live engine makes, so an exported note lands on the same
       // recording it played back on.
       const picked = voiceForPitch(voice.zones, note.pitch)
@@ -160,21 +225,7 @@ export async function renderMix(
       const velocityGain = offline.createGain()
       velocityGain.gain.value = gainForVelocity(note.velocity)
       source.connect(velocityGain)
-
-      // The clip's volume curve rides along exactly as it does live — the same
-      // helper, the same ramps — so a fade on the timeline is a fade in the file.
-      // Over the note's own length, as live: the curve is the clip's, and a tail
-      // runs on past where its shape ends.
-      const curve = note.curve
-      const curveOffsetSec = note.curveOffsetSec
-      if (curve !== undefined && curve.length > 0 && curveOffsetSec !== undefined) {
-        const automation = offline.createGain()
-        scheduleGainCurve(automation.gain, curve, curveOffsetSec, note.startSec, note.lengthSec)
-        velocityGain.connect(automation)
-        automation.connect(stripGain)
-      } else {
-        velocityGain.connect(stripGain)
-      }
+      velocityGain.connect(target)
 
       // Stopped where the live engine stops it, tail included: a file that cut
       // every note back to the length it was drawn at would be missing exactly the
@@ -196,6 +247,31 @@ export async function renderMix(
 }
 
 /**
+ * The node one note's voice hangs off: what shapes it, rather than where it goes.
+ *
+ * A clip may carry a volume curve. Where it does, that curve rides along exactly
+ * as it does live — the same `scheduleGainCurve`, the same ramps — so a fade on
+ * the timeline is a fade in the file, over the note's own length as live: the
+ * curve belongs to the clip, and a tail runs on past where its shape ends. Where
+ * there is none, the note's voice hangs straight off the strip's input — ahead of
+ * the effects, as live, so a curve shapes what is fed to the reverb rather than
+ * what comes back from it.
+ *
+ * Reading it as a node rather than as a branch is what lets the sampler and the
+ * synth below be written once each instead of once each per automation case.
+ */
+function noteTarget(offline: OfflineAudioContext, stripInput: GainNode, note: SongNote): AudioNode {
+  const curve = note.curve
+  const curveOffsetSec = note.curveOffsetSec
+  if (curve === undefined || curve.length === 0 || curveOffsetSec === undefined) return stripInput
+
+  const automation = offline.createGain()
+  scheduleGainCurve(automation.gain, curve, curveOffsetSec, note.startSec, note.lengthSec)
+  automation.connect(stripInput)
+  return automation
+}
+
+/**
  * Render every distinct (recording, shift) pair the song needs, in chunks.
  *
  * A shift of 0 is skipped: that is the recording itself, and `pitchShiftedBuffer`
@@ -205,6 +281,9 @@ export async function renderMix(
  * note's pitch is only half of what decides which copy it needs — the zone it
  * lands on is the other half. Notes an octave apart can want the same recording
  * at the same shift, and notes a semitone apart can want two different ones.
+ *
+ * Synth voices have nothing to warm: their pitch is an oscillator frequency, and
+ * a frequency needs no rendering before it can be played.
  */
 async function warmPitchCache(
   voices: ExportVoice[],
@@ -214,6 +293,7 @@ async function warmPitchCache(
   const pending: { buffer: AudioBuffer; shift: number }[] = []
 
   for (const voice of voices) {
+    if (voice.kind === 'synth') continue
     for (const note of voice.notes) {
       if (note.lengthSec <= 0) continue
 

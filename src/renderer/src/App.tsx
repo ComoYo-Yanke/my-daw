@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import BpmField from './components/BpmField'
 import ChannelRow from './components/ChannelRow'
 import DawWindow from './components/DawWindow'
+import EffectsPanel from './components/EffectsPanel'
 import ExportDialog from './components/ExportDialog'
 import FileMenu from './components/FileMenu'
 import Knob from './components/Knob'
@@ -10,9 +11,11 @@ import PianoRoll from './components/PianoRoll'
 import Playlist from './components/Playlist'
 import SampleBrowser from './components/SampleBrowser'
 import StepsWindow from './components/StepsWindow'
+import SynthPanel from './components/SynthPanel'
 import Toast from './components/Toast'
 import WindowMenu from './components/WindowMenu'
-import { selectNotes, useDawStore } from './state/useDawStore'
+import { sampleOfChannel, selectNotes, useDawStore } from './state/useDawStore'
+import type { SynthChannel } from './state/useDawStore'
 import { selectWindowOpen, useWindowStore } from './state/useWindowStore'
 
 /** The app's output level, written the way a channel's own volume is. */
@@ -31,6 +34,11 @@ function App(): React.JSX.Element {
   const clearError = useDawStore((state) => state.clearError)
   const pianoRollChannelId = useDawStore((state) => state.pianoRollChannelId)
   const closePianoRoll = useDawStore((state) => state.closePianoRoll)
+  const synthPanelChannelId = useDawStore((state) => state.synthPanelChannelId)
+  const closeSynthPanel = useDawStore((state) => state.closeSynthPanel)
+  const effectsPanelChannelId = useDawStore((state) => state.effectsPanelChannelId)
+  const closeEffectsPanel = useDawStore((state) => state.closeEffectsPanel)
+  const addSynthChannel = useDawStore((state) => state.addSynthChannel)
   const playback = useDawStore((state) => state.playback)
   const playSteps = useDawStore((state) => state.playSteps)
   const playSong = useDawStore((state) => state.playSong)
@@ -69,6 +77,16 @@ function App(): React.JSX.Element {
   // Resolved from the id rather than stored as an object, so the panel always
   // shows the channel's current notes and name.
   const pianoRollChannel = channels.find((channel) => channel.id === pianoRollChannelId)
+  // The same, and narrowed to a synth: the id can outlive a channel that was
+  // deleted, and only a synth channel has parameters to show. The predicate is
+  // written out because TypeScript only infers one from a single test, and this
+  // has to be two to narrow at all.
+  const synthPanelChannel = channels.find(
+    (channel): channel is SynthChannel =>
+      channel.id === synthPanelChannelId && channel.type === 'synth'
+  )
+  // Not narrowed: every channel has an effect chain, so any kind will do.
+  const effectsPanelChannel = channels.find((channel) => channel.id === effectsPanelChannelId)
 
   const stepsPlaying = playback?.mode === 'steps'
 
@@ -183,8 +201,13 @@ function App(): React.JSX.Element {
         case 'steps':
           void playSteps()
           return
+        // The ones without a transport of their own. Space in either parameter
+        // panel would only stop whatever the user is listening to while they
+        // turn a knob, which is the opposite of what either is open for.
         case 'channel-rack':
         case 'sample-browser':
+        case 'synth-panel':
+        case 'effects-panel':
           return
         case null:
           // Nothing has been pointed at yet, so there is no window to ask. The
@@ -303,9 +326,27 @@ function App(): React.JSX.Element {
             on every frame of it. */}
         <DawWindow id="channel-rack">
           <main className="content">
+            {/* The rack's own toolbar. It has one button because there is one
+                thing you add here without going to the library: a channel that
+                needs no sample, since it makes its own sound. */}
+            <div className="rack-bar">
+              <button
+                type="button"
+                className="rack-bar__button"
+                onClick={addSynthChannel}
+                title="新建一个合成器通道（不加载采样，用振荡器发声）"
+              >
+                + 合成器
+              </button>
+              <span className="rack-bar__count">
+                {channels.length === 0 ? '还没有通道' : `${channels.length} 个通道`}
+              </span>
+            </div>
+
             {channels.length === 0 ? (
               <p className="empty">
-                还没有通道。从「采样库」里挑一个，或者点「导入采样」选音频文件，每个采样会成为机架上的一个通道。
+                还没有通道。从「采样库」里挑一个，或者点「导入采样」选音频文件，每个采样会成为机架上的一个通道；也可以点上面的「+
+                合成器」直接建一个用振荡器发声的通道。
               </p>
             ) : (
               <div className="rack">
@@ -313,7 +354,7 @@ function App(): React.JSX.Element {
                   <ChannelRow
                     key={channel.id}
                     channel={channel}
-                    sample={samples.find((item) => item.id === channel.sampleId)}
+                    sample={sampleOfChannel(samples, channel)}
                     isPlaying={playingChannelIds.includes(channel.id)}
                     playback={playback}
                   />
@@ -352,8 +393,52 @@ function App(): React.JSX.Element {
           ) : (
             <PianoRoll
               channel={pianoRollChannel}
-              sample={samples.find((item) => item.id === pianoRollChannel.sampleId)}
+              sample={sampleOfChannel(samples, pianoRollChannel)}
             />
+          )}
+        </DawWindow>
+
+        {/* The parameter panel. Like the roll it can be open with nothing in it
+            — a synth channel can be deleted, and the window id is written down
+            while the channel it pointed at is not — so it says what to do about
+            that instead of drawing an empty panel.
+
+            It deliberately has no `onRequestClose`: closing it stops nothing, so
+            the window's own close button and `closeSynthPanel` are the same act. */}
+        <DawWindow
+          id="synth-panel"
+          title={synthPanelChannel === undefined ? '合成器' : `合成器 · ${synthPanelChannel.name}`}
+          onRequestClose={closeSynthPanel}
+        >
+          {synthPanelChannel === undefined ? (
+            <p className="empty">
+              在 Channel Rack 里双击一个合成器通道，这里就会打开它的参数；还没有的话，点「+
+              合成器」新建一个。
+            </p>
+          ) : (
+            <SynthPanel channel={synthPanelChannel} />
+          )}
+        </DawWindow>
+
+        {/* The effect chain. Open with nothing in it for the same reason the
+            parameter panel is — the id outlives the channel it pointed at — and
+            like that one it has no `onRequestClose`, because closing it stops
+            nothing: the chain it was showing is the channel's, not the window's,
+            and it keeps playing exactly as it was. */}
+        <DawWindow
+          id="effects-panel"
+          title={
+            effectsPanelChannel === undefined ? '效果器' : `效果器 · ${effectsPanelChannel.name}`
+          }
+          onRequestClose={closeEffectsPanel}
+        >
+          {effectsPanelChannel === undefined ? (
+            <p className="empty">
+              在 Channel Rack 里点一个通道的 FX
+              按钮，这里就会打开它的效果链；还没有通道的话，先导入一个采样或新建一个合成器。
+            </p>
+          ) : (
+            <EffectsPanel channel={effectsPanelChannel} />
           )}
         </DawWindow>
       </div>

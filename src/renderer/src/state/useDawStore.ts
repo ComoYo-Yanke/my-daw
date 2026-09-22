@@ -5,12 +5,12 @@ import {
   getAudioContext,
   getStrip,
   playArrangement,
-  playNoteSequence,
   releaseAllStrips,
   releaseStrip,
   resumeAudioContext,
   scheduleNoteSequence,
   setMasterGain,
+  setStripEffects,
   setStripGain,
   setStripPan,
   stopAllStrips,
@@ -18,10 +18,27 @@ import {
   toArrayBuffer,
   triggerStrip
 } from '../audio/engine'
-import type { ScheduledChannel, SongNote } from '../audio/engine'
+import type { ChannelStrip, ScheduledChannel, SongNote } from '../audio/engine'
 import type { ExportVoice } from '../audio/export'
+import {
+  copyEffect,
+  makeEffect,
+  withEffectParams,
+  type Effect,
+  type EffectParams,
+  type EffectType
+} from '../types/effect'
 import { isLibraryPath, loadLibrarySample } from '../audio/library'
 import { computePeaks } from '../audio/peaks'
+import { scheduleSynthSequence } from '../audio/synth'
+import {
+  clampSynthParams,
+  DEFAULT_SYNTH_PARAMS,
+  sameSynthParams,
+  SYNTH_PRESETS,
+  type SynthParams,
+  type SynthPresetId
+} from '../types/synth'
 import { singleZone, voiceForPitch, type SampleZone } from '../types/sample'
 import { parseProjectFile, serializeProject, type ProjectFile } from '../types/project'
 import { curveFromNotes, NO_CURVE, normalizeCurve, type CurvePoint } from '../types/curve'
@@ -116,19 +133,31 @@ const USER_SAMPLE_FOLDER_KEY = 'userSampleFolder'
  */
 export const ROOT_CATEGORY_LABEL = '（根目录）'
 
+/** Whichever kind of instrument a channel is. */
+export type ChannelType = 'sampler' | 'synth'
+
 /**
- * A rack channel: one mixer strip that plays one sample.
+ * What every channel has, whichever kind it is.
  *
- * Channels are what the user tweaks; samples are just the audio they point at.
- * Several channels may share one `sampleId` with independent params.
- *
- * A channel deliberately holds no notes: *how* a sample sounds is a channel's
- * business, *when* it plays belongs to a pattern (see `Pattern`).
+ * All of it belongs to the strip rather than to the instrument: level, pan, mute,
+ * solo, colour and the step loop are the same things on a sampler and on a synth,
+ * and the mixer does not care where the sound came from.
  */
-export type Channel = {
+export type ChannelBase = {
   id: string
   name: string
-  sampleId: string
+  /**
+   * What this channel's sound goes through, in order. Empty means a straight
+   * wire, which is how every channel starts.
+   *
+   * It belongs here rather than on either instrument for the same reason volume
+   * and pan do: a channel is the unit that has a sound to process, and it does
+   * not matter whether that sound came from a recording or from an oscillator.
+   * Order is the whole of what a chain is — reverb into distortion and
+   * distortion into reverb are two different sounds — so the array is ordered
+   * and nothing about it is ever sorted.
+   */
+  effects: Effect[]
   /** 0..1 */
   volume: number
   /** -1 (hard left) .. 1 (hard right) */
@@ -144,6 +173,42 @@ export type Channel = {
   /** 0 (straight) .. 100 (off-beat steps half a step late). */
   swing: number
 }
+
+/**
+ * A channel that plays a recording.
+ *
+ * Channels are what the user tweaks; samples are just the audio they point at.
+ * Several channels may share one `sampleId` with independent params.
+ */
+export type SamplerChannel = ChannelBase & {
+  type: 'sampler'
+  sampleId: string
+}
+
+/**
+ * A channel that makes its own sound.
+ *
+ * No sample, no zones, no root note: the ten numbers in `synth` are the whole
+ * instrument, and a note says which pitch to play rather than how far to shift.
+ */
+export type SynthChannel = ChannelBase & {
+  type: 'synth'
+  synth: SynthParams
+}
+
+/**
+ * A rack channel: one mixer strip, and one of the two instruments under it.
+ *
+ * A discriminated union rather than a channel with an optional sample, so that
+ * "a sampler with no sample" and "a synth" cannot be confused for one another —
+ * the first is a channel that has lost something, the second is complete. Every
+ * place that has to tell them apart narrows on `type` and gets the fields that
+ * belong to that kind and nothing else.
+ *
+ * A channel deliberately holds no notes: *how* a sample sounds is a channel's
+ * business, *when* it plays belongs to a pattern (see `Pattern`).
+ */
+export type Channel = SamplerChannel | SynthChannel
 
 /**
  * A pattern: the note content of the whole rack, per channel.
@@ -340,6 +405,14 @@ export const DEFAULT_PAN = 0
 export const FIRST_PATTERN_NAME = 'Pattern 1'
 /** Base name for the patterns created from the UI. */
 export const PATTERN_NAME_BASE = 'Pattern'
+/**
+ * Base name for synth channels.
+ *
+ * Sampler channels are named after the recording they play, which is a name the
+ * user already recognises. A synth has no file to be named after, so it says
+ * what it is and counts up from there.
+ */
+export const SYNTH_CHANNEL_NAME_BASE = 'Synth'
 
 export type DawState = {
   /** The sample pool: decoded audio, imported once and shared. */
@@ -412,6 +485,31 @@ export type DawState = {
 
   /** Channel whose Piano Roll panel is open, or null when the panel is closed. */
   pianoRollChannelId: string | null
+  /**
+   * Synth channel whose parameter panel is open, or null when it is closed.
+   *
+   * A separate field from `pianoRollChannelId` rather than one "which channel is
+   * open" for both, because the two panels are not alternatives: a synth channel
+   * can perfectly well have its roll and its parameters on screen at once, which
+   * is exactly how a sound gets tweaked against a part.
+   *
+   * Like the roll's, this is where you are looking and not what was done, so it
+   * stays out of the undo snapshot and out of the project file.
+   */
+  synthPanelChannelId: string | null
+  /**
+   * Which channel's effect chain the 效果器 window is editing, or null when it is
+   * closed.
+   *
+   * A third field of the same kind, and separate from the other two for the same
+   * reason they are separate from each other: all three answer "which channel is
+   * this window about", and they are not alternatives. A channel's reverb and its
+   * notes are exactly what one wants on screen together.
+   *
+   * Like theirs, this is where you are looking rather than what was done, so it
+   * stays out of the undo snapshot and out of the project file.
+   */
+  effectsPanelChannelId: string | null
   /**
    * Whether the piano roll's transport wraps round to the top of the pattern
    * instead of stopping at the end. A property of the transport rather than of a
@@ -516,6 +614,81 @@ export type DawState = {
   toggleSolo: (channelId: string) => void
   duplicateChannel: (channelId: string) => void
   /**
+   * Add a synth channel to the rack, at the end.
+   *
+   * Its own action rather than `addChannel(sample)` with the sample left out,
+   * because the two are not the same act: adding a synth chooses a sound, and
+   * adding a sampler chooses a recording. What they share — a name, a colour, a
+   * strip — is the half the factories above already share.
+   */
+  addSynthChannel: () => void
+  /**
+   * Change some of a synth channel's parameters.
+   *
+   * A patch rather than a whole set, because a patch is what the panel has: a
+   * knob knows which one number it is and nothing else. Values are clamped here
+   * rather than trusted, so a bad number from anywhere lands on a legal one
+   * instead of on the audio graph.
+   *
+   * `key` names a continuous gesture — a knob drag reports the same key on every
+   * move, so the whole drag is one undo step. Omit it for a discrete edit (a
+   * dropdown, a preset), which is its own step however fast the next one follows.
+   * A patch that changes nothing is not an edit at all and records nothing.
+   */
+  updateSynth: (channelId: string, patch: Partial<SynthParams>, key?: string) => void
+  /**
+   * Switch a synth channel to one of the built-in sounds.
+   *
+   * A preset is only a set of parameters — nothing about it is code — so this is
+   * `updateSynth` with all ten numbers at once, and lands on the undo stack as
+   * one step like any other edit.
+   */
+  applySynthPreset: (channelId: string, presetId: SynthPresetId) => void
+  /**
+   * Put a new effect at the end of a channel's chain.
+   *
+   * At the end rather than at the front, because that is where a chain grows: a
+   * new effect is the last thing done to the sound so far, and moving it earlier
+   * is one click away on the panel. Its parameters start at that effect's
+   * defaults, so adding one is immediately audible and immediately worth turning.
+   */
+  addEffect: (channelId: string, type: EffectType) => void
+  /** Take one effect off a channel's chain. The others close up around it. */
+  removeEffect: (channelId: string, effectId: string) => void
+  /**
+   * Change one effect's parameters.
+   *
+   * The whole set rather than a patch, because that is what the panel holds: an
+   * effect's numbers are all in one object, and a knob that knows its own field
+   * has the rest of them to hand. The set is clamped here, so a bad number from
+   * anywhere lands on a legal one instead of on the audio graph.
+   *
+   * `key` means what it means on `updateSynth`: it names a continuous gesture, so
+   * one drag of a knob is one undo step.
+   *
+   * There is deliberately no "did anything change" check of the kind `updateSynth`
+   * makes. The only caller is the panel, and `Knob` reports nothing at all unless
+   * the value actually moved — see `Knob`'s own `commit`.
+   */
+  updateEffect: (channelId: string, effectId: string, params: EffectParams, key?: string) => void
+  /**
+   * Switch one effect on or off in place.
+   *
+   * Bypass rather than removal: the effect keeps its position in the chain and
+   * every number it was tuned to, so it can be compared against the channel
+   * without it and then brought back exactly as it was. That is the point of it —
+   * an effect you have to delete to hear past is one you will not delete.
+   */
+  toggleEffect: (channelId: string, effectId: string) => void
+  /**
+   * Move one effect one place up or down the chain.
+   *
+   * A move rather than a re-sort: an effect at either end has nowhere to go, and
+   * asking is not an error, so nothing happens. That is what lets the panel leave
+   * both arrows enabled and let the ends be no-ops.
+   */
+  moveEffect: (channelId: string, effectId: string, delta: number) => void
+  /**
    * Take a channel out of the rack.
    *
    * Its notes and its steps go with it, out of *every* pattern — they are filed
@@ -553,6 +726,17 @@ export type DawState = {
 
   openPianoRoll: (channelId: string) => void
   closePianoRoll: () => void
+  /** Open the parameter panel on a synth channel, and point its window at it. */
+  openSynthPanel: (channelId: string) => void
+  closeSynthPanel: () => void
+  /**
+   * Open the effect chain panel on any channel, and point its window at it.
+   *
+   * Any channel rather than a synth's: a reverb is not a property of an
+   * instrument, and a sampler is as likely to want one as an oscillator is.
+   */
+  openEffectsPanel: (channelId: string) => void
+  closeEffectsPanel: () => void
   toggleLoop: () => void
   /** Move the transport's start, in seconds into the pattern. */
   setPianoRollStart: (startSec: number) => void
@@ -1153,6 +1337,95 @@ export function audibleGain(channel: Channel, anySoloed: boolean): number {
 }
 
 /**
+ * The sample a channel plays, if it plays one.
+ *
+ * A synth channel has none — it is its own instrument — so the places that ask
+ * this get `undefined`, which is also what they already get for a sampler whose
+ * file went missing. The one spot that answers the question for display, so a
+ * row, a roll and the app cannot disagree about which kind a channel is.
+ */
+export function sampleOfChannel(samples: Sample[], channel: Channel): Sample | undefined {
+  if (channel.type === 'synth') return undefined
+  return samples.find((sample) => sample.id === channel.sampleId)
+}
+
+/**
+ * What a channel sounds with, or null when it has nothing to sound.
+ *
+ * The one place that answers "sampler or synth" for the schedulers: everything
+ * downstream hands a voice to `scheduleOn` and never asks the channel again. A
+ * sampler whose sample went missing — or was never decoded — answers null, which
+ * is what every caller already treats as "nothing to play".
+ */
+type ChannelVoice =
+  | { kind: 'sampler'; zones: SampleZone[]; buffer: AudioBuffer }
+  | { kind: 'synth'; params: SynthParams }
+
+function voiceOf(state: DawState, channel: Channel): ChannelVoice | null {
+  if (channel.type === 'synth') return { kind: 'synth', params: channel.synth }
+  const sample = sampleOfChannel(state.samples, channel)
+  if (sample === undefined) return null
+  return { kind: 'sampler', zones: sample.zones, buffer: sample.buffer }
+}
+
+/**
+ * Hand a voice a run of notes on a strip, whichever kind of channel it came from.
+ *
+ * Neither branch stops the strip first: this is the "add to what is playing" of
+ * the two, which is what the step loop and the roll's loop extend with. The
+ * callers that are replacing what sounds say so with `playOn` below.
+ */
+function scheduleOn(
+  strip: ChannelStrip,
+  voice: ChannelVoice,
+  notes: SongNote[],
+  atSec: number,
+  onFinished?: () => void
+): void {
+  if (voice.kind === 'synth') {
+    scheduleSynthSequence(strip, voice.params, notes, atSec, onFinished)
+  } else {
+    scheduleNoteSequence(strip, voice.zones, notes, atSec, onFinished)
+  }
+}
+
+/** The same, but cutting whatever the strip is already doing first. */
+function playOn(
+  strip: ChannelStrip,
+  voice: ChannelVoice,
+  notes: SongNote[],
+  atSec: number,
+  onFinished?: () => void
+): void {
+  stopStrip(strip)
+  scheduleOn(strip, voice, notes, atSec, onFinished)
+}
+
+/** How long an auditioned synth note is held, on top of whatever its attack is. */
+const AUDITION_HOLD_SEC = 0.35
+
+/**
+ * The note a synth channel is auditioned with: one short note at middle C.
+ *
+ * A sampler channel is auditioned by playing its whole recording, which is a
+ * thing that exists on disk. A synth has no recording — it has parameters — so
+ * what 试听 means for it is one note, at the pitch the roll calls 0, held long
+ * enough that the attack is over before the release starts. Held *past* the
+ * attack rather than for a fixed time, because a pad's attack is longer than any
+ * fixed figure that would also suit a pluck.
+ */
+function auditionNote(params: SynthParams, pitch = 0): Note {
+  return {
+    id: crypto.randomUUID(),
+    startSec: 0,
+    lengthSec: Math.max(params.attackSec, 0) + AUDITION_HOLD_SEC,
+    pitch,
+    velocity: DEFAULT_VELOCITY,
+    extend: 0
+  }
+}
+
+/**
  * The curve a clip actually plays and draws with.
  *
  * Its own if it has one, and otherwise one read off the pattern's note
@@ -1323,7 +1596,8 @@ export type ExportPlan = {
  * A channel with nothing to play is dropped rather than shipped as a silent
  * strip. A channel with no sample, or one whose file went missing, is dropped
  * too — the same reason the transport drops it, which is that there is nothing
- * to sound.
+ * to sound. A synth channel always has something to sound, so it is only ever
+ * dropped for having no notes.
  */
 export function selectExportPlan(state: DawState, bpm: number, tailSec: number): ExportPlan {
   const { notesByChannel, bars } = selectSongTimeline(state, bpm)
@@ -1334,14 +1608,23 @@ export function selectExportPlan(state: DawState, bpm: number, tailSec: number):
   for (const [channelId, notes] of notesByChannel) {
     if (notes.length === 0) continue
     const channel = state.channels.find((item) => item.id === channelId)
-    const sample = channel && state.samples.find((item) => item.id === channel.sampleId)
-    if (!channel || !sample) continue
-    voices.push({
-      zones: sample.zones,
+    if (channel === undefined) continue
+    const voice = voiceOf(state, channel)
+    if (voice === null) continue
+
+    const shared = {
       gain: audibleGain(channel, anySoloed),
       pan: channel.pan,
+      // Along for the ride, bypassed effects included: what a bypassed effect
+      // means is the chain's own business, and it gives the same answer offline.
+      effects: channel.effects,
       notes: [...notes].sort((a, b) => a.startSec - b.startSec)
-    })
+    }
+    voices.push(
+      voice.kind === 'synth'
+        ? { ...shared, kind: 'synth', params: voice.params }
+        : { ...shared, kind: 'sampler', zones: voice.zones }
+    )
   }
 
   // Where the notes run to, which the arrangement's own edge does not always
@@ -1406,8 +1689,13 @@ export const useDawStore = create<DawState>((set, get) => {
    * into one step: dragging a knob or a note reports the same key on every move,
    * so only the first move records anything and the rest ride on it. A different
    * key, or a pause, starts a new step.
+   *
+   * `coalesce` off is for the edits that are not gestures at all: a button that
+   * changes something whole — switching a preset, say — is its own step however
+   * fast the next one is pressed, because pressing two of them in succession is
+   * two decisions and not one long drag.
    */
-  const pushUndo = (key: string): void => {
+  const pushUndo = (key: string, coalesce = true): void => {
     // Anything that can be taken back is a change to the project, so the file on
     // disk is now out of date — including the moves that fold into the step
     // already on the stack. Undoing back to the saved state does not clear this
@@ -1415,7 +1703,7 @@ export const useDawStore = create<DawState>((set, get) => {
     set({ isDirty: true })
 
     const nowMs = performance.now()
-    if (key === lastUndoKey && nowMs - lastUndoAtMs < UNDO_COALESCE_MS) {
+    if (coalesce && key === lastUndoKey && nowMs - lastUndoAtMs < UNDO_COALESCE_MS) {
       lastUndoAtMs = nowMs
       return
     }
@@ -1459,6 +1747,50 @@ export const useDawStore = create<DawState>((set, get) => {
     }
   }
 
+  /** Hand one channel's effect chain to its strip. */
+  const applyChannelEffects = (channel: Channel): void => {
+    const strip = getStrip(channel.id)
+    if (strip) setStripEffects(strip, channel.effects)
+  }
+
+  /**
+   * Push the whole rack's effect chains onto the audio nodes.
+   *
+   * Separate from `applyMix` rather than folded into it, because the two are
+   * called from different places: a volume knob changes no chain, and a chain
+   * edit changes no volume. For the cases that replace the rack outright — an
+   * undo, an opened project — both are called, because both kinds of thing came
+   * back at once.
+   *
+   * Single-channel edits use `applyChannelEffects` instead. Walking the rack
+   * would be cheap, but it would hand every *other* channel the chain it already
+   * has once per frame of a drag, and a chain takes that as a fresh instruction
+   * to ramp its parameters — harmless in the result, and a lie about what moved.
+   */
+  const applyEffects = (channels: Channel[]): void => {
+    for (const channel of channels) {
+      applyChannelEffects(channel)
+    }
+  }
+
+  /**
+   * Replace one channel's effect chain, and land it on the audio graph.
+   *
+   * The one place that writes a chain, so that "the chain changed" and "the
+   * chain was heard to change" cannot come apart — the same reason the mix has
+   * `applyMix` rather than a `setStripGain` call at each of its call sites.
+   */
+  const patchEffects = (channelId: string, change: (effects: Effect[]) => Effect[]): void => {
+    const channel = get().channels.find((item) => item.id === channelId)
+    if (channel === undefined) return
+
+    const updated: Channel = { ...channel, effects: change(channel.effects) }
+    set((state) => ({
+      channels: state.channels.map((item) => (item.id === channelId ? updated : item))
+    }))
+    applyChannelEffects(updated)
+  }
+
   /**
    * Give a channel id an audio strip.
    *
@@ -1498,19 +1830,24 @@ export const useDawStore = create<DawState>((set, get) => {
   }
 
   /**
-   * Create a channel and its audio strip together, so they can never diverge.
+   * The half of a channel that does not depend on which instrument it holds.
    *
    * `taken` is how many channels already exist, which is what picks the step
    * colour. It is passed in rather than read from the store because importing a
    * batch of samples builds every channel before any of them are added.
+   *
+   * The strip is attached here rather than in either factory, so that "every
+   * channel has one" is a property of the shared half and not something each
+   * kind has to remember.
    */
-  const makeChannel = (sampleId: string, name: string, taken: number): Channel => {
-    const id = crypto.randomUUID()
+  const makeChannelBase = (id: string, name: string, taken: number): ChannelBase => {
     attachStrip(id)
     return {
       id,
       name,
-      sampleId,
+      // A channel starts with nothing between it and the fader, which is the
+      // same sound it made before there were any effects at all.
+      effects: [],
       volume: DEFAULT_VOLUME,
       pan: DEFAULT_PAN,
       muted: false,
@@ -1518,6 +1855,41 @@ export const useDawStore = create<DawState>((set, get) => {
       color: nextStepColor(taken),
       stepCount: DEFAULT_STEP_COUNT,
       swing: 0
+    }
+  }
+
+  /**
+   * Create a sampler channel and its audio strip together, so they can never
+   * diverge.
+   */
+  const makeChannel = (sampleId: string, name: string, taken: number): SamplerChannel => {
+    return {
+      ...makeChannelBase(crypto.randomUUID(), name, taken),
+      type: 'sampler',
+      sampleId
+    }
+  }
+
+  /**
+   * Create a synth channel and its strip.
+   *
+   * `synth` is passed in only by 复制, which has to hand the copy its own set of
+   * parameters — a channel duplicated twice and tweaked must not be one sound
+   * wearing three names. Everything else wants the default preset.
+   *
+   * The strip it gets is the same one a sampler gets, because a strip is a fader
+   * and a panner: nothing about it knows what is plugged into it.
+   */
+  const makeSynthChannel = (
+    name: string,
+    taken: number,
+    synth: SynthParams = DEFAULT_SYNTH_PARAMS
+  ): SynthChannel => {
+    return {
+      ...makeChannelBase(crypto.randomUUID(), name, taken),
+      type: 'synth',
+      // Copied, so the copy's parameters are its own the moment it exists.
+      synth: { ...synth }
     }
   }
 
@@ -1654,9 +2026,9 @@ export const useDawStore = create<DawState>((set, get) => {
       // The step count may have shrunk under a cursor that was already running.
       cursor.index %= stepCount
 
-      const sample = state.samples.find((item) => item.id === channel.sampleId)
+      const voice = voiceOf(state, channel)
       const strip = getStrip(id)
-      if (!sample || !strip) continue
+      if (voice === null || !strip) continue
 
       // The window was hidden long enough that waking up stopped and the
       // reservation ran out. Pick the loop up from now rather than firing the
@@ -1686,7 +2058,7 @@ export const useDawStore = create<DawState>((set, get) => {
             // next one, which is the whole shape of a step sequence.
             extend: 0
           }
-          scheduleNoteSequence(strip, sample.zones, [note], atSec)
+          scheduleOn(strip, voice, [note], atSec)
         }
 
         cursor.recent.push({ index, atSec })
@@ -1784,11 +2156,11 @@ export const useDawStore = create<DawState>((set, get) => {
     const lengthBars = selectLengthBars(state)
 
     const channel = state.channels.find((item) => item.id === loop.channelId)
-    const sample = channel && state.samples.find((item) => item.id === channel.sampleId)
     const strip = getStrip(loop.channelId)
+    const voice = channel === undefined ? null : voiceOf(state, channel)
 
-    // The channel or its sample went away underneath the transport.
-    if (!channel || !sample || !strip) {
+    // The channel went away, or its sample did, underneath the transport.
+    if (voice === null || strip === undefined) {
       stopPianoRoll()
       set((current) => (current.playback?.mode === 'piano-roll' ? { playback: null } : {}))
       return
@@ -1843,7 +2215,7 @@ export const useDawStore = create<DawState>((set, get) => {
       // A slice with nothing in it is still a slice: the reservation advances
       // either way, or the transport would stall on the first rest.
       if (inSlice.length > 0) {
-        scheduleNoteSequence(strip, sample.zones, inSlice, loop.nextBarAtSec)
+        scheduleOn(strip, voice, inSlice, loop.nextBarAtSec)
       }
 
       loop.recent.push({
@@ -1944,23 +2316,47 @@ export const useDawStore = create<DawState>((set, get) => {
     }
 
     const missingSamplePaths: Record<string, string> = {}
-    const channels = project.channels.map((entry) => {
-      const { samplePath, ...rest } = entry
-      const loadedId = sampleIdByPath.get(samplePath)
-      if (loadedId !== undefined) return { ...rest, sampleId: loadedId }
+    const channels: Channel[] = project.channels.map((entry): Channel => {
+      const {
+        id,
+        name,
+        type,
+        synth,
+        effects,
+        volume,
+        pan,
+        muted,
+        soloed,
+        color,
+        stepCount,
+        swing
+      } = entry
+      const base = { id, name, effects, volume, pan, muted, soloed, color, stepCount, swing }
+
+      // A synth channel has no file to look for: it *is* the instrument, and it
+      // came back whole. Nothing here can make one sound different from how it
+      // was saved, which is not true of a sampler.
+      if (type === 'synth') {
+        return { ...base, type: 'synth', synth: synth ?? DEFAULT_SYNTH_PARAMS }
+      }
+
+      const loadedId = sampleIdByPath.get(entry.samplePath)
+      if (loadedId !== undefined) return { ...base, type: 'sampler', sampleId: loadedId }
 
       // The row still needs some id. One that no sample answers to is exactly
       // what "this channel's sample is gone" looks like everywhere else.
       const orphanId = crypto.randomUUID()
-      missingSamplePaths[orphanId] = samplePath
-      return { ...rest, sampleId: orphanId }
+      missingSamplePaths[orphanId] = entry.samplePath
+      return { ...base, type: 'sampler', sampleId: orphanId }
     })
 
     return {
       samples,
       channels,
       missingSamplePaths,
-      missingCount: channels.filter((channel) => channel.sampleId in missingSamplePaths).length
+      // Counted off the map rather than off the channels, because a synth
+      // channel has no `sampleId` to be missing and there is nothing to filter.
+      missingCount: Object.keys(missingSamplePaths).length
     }
   }
 
@@ -2044,6 +2440,8 @@ export const useDawStore = create<DawState>((set, get) => {
     playlistSnapEnabled: true,
     playlistSnapDivision: DEFAULT_PLAYLIST_SNAP,
     pianoRollChannelId: null,
+    synthPanelChannelId: null,
+    effectsPanelChannelId: null,
     loopEnabled: false,
     pianoRollStartSec: 0,
     snapEnabled: true,
@@ -2150,8 +2548,10 @@ export const useDawStore = create<DawState>((set, get) => {
       }
 
       // Mute, solo, volume and pan live on the audio nodes, not in the state, so
-      // the restored mix has to be pushed back onto them.
+      // the restored mix has to be pushed back onto them. The effect chains live
+      // there too, and come back with the channels that carry them.
       applyMix(previous.channels)
+      applyEffects(previous.channels)
     },
 
     importSamples: async () => {
@@ -2382,16 +2782,21 @@ export const useDawStore = create<DawState>((set, get) => {
     },
 
     triggerChannel: async (channelId) => {
-      const channel = get().channels.find((item) => item.id === channelId)
-      if (!channel) return
-      const sample = get().samples.find((item) => item.id === channel.sampleId)
+      const state = get()
+      const channel = state.channels.find((item) => item.id === channelId)
+      if (channel === undefined) return
+      const voice = voiceOf(state, channel)
       const strip = getStrip(channelId)
-      if (!sample || !strip) return
+      if (voice === null || strip === undefined) return
 
       await resumeAudioContext()
       // Deliberately does not stop other channels: voices overlap, so you can
       // preview several channels at once and hear mute/solo take effect.
-      triggerStrip(strip, sample.buffer)
+      if (voice.kind === 'synth') {
+        playOn(strip, voice, [auditionNote(voice.params)], getAudioContext().currentTime)
+      } else {
+        triggerStrip(strip, voice.buffer)
+      }
     },
 
     /** Everything, including one-shot previews the transport knows nothing about. */
@@ -2456,15 +2861,19 @@ export const useDawStore = create<DawState>((set, get) => {
       if (!source) return
       pushUndo(`duplicate:${channelId}`)
 
-      // Same decoded buffer, brand new strip: independent params, no re-decode.
-      const copy = makeChannel(
-        source.sampleId,
-        nextNumberedName(
-          source.name,
-          get().channels.map((c) => c.name)
-        ),
-        get().channels.length
+      const name = nextNumberedName(
+        source.name,
+        get().channels.map((c) => c.name)
       )
+      const taken = get().channels.length
+
+      // Same decoded buffer, brand new strip: independent params, no re-decode.
+      // A synth copy likewise gets its own set of parameters, so tuning one does
+      // not tune the other.
+      const copy: Channel =
+        source.type === 'synth'
+          ? makeSynthChannel(name, taken, source.synth)
+          : makeChannel(source.sampleId, name, taken)
       copy.volume = source.volume
       copy.pan = source.pan
       copy.muted = source.muted
@@ -2474,6 +2883,10 @@ export const useDawStore = create<DawState>((set, get) => {
       // tell apart.
       copy.stepCount = source.stepCount
       copy.swing = source.swing
+      // The chain comes along — a copy of a sound is a copy of how it was
+      // treated — but as its own effects with their own ids and their own
+      // numbers, so turning a knob on one copy leaves the other where it was.
+      copy.effects = source.effects.map(copyEffect)
 
       // The notes and the steps come along, like duplicating a channel in FL
       // does — but as fresh objects with fresh ids, so editing one copy never
@@ -2498,6 +2911,118 @@ export const useDawStore = create<DawState>((set, get) => {
         )
       }))
       applyMix(get().channels)
+      applyEffects(get().channels)
+    },
+
+    /**
+     * Add a synth channel.
+     *
+     * Nothing is auditioned, unlike adding a sampler channel from the library —
+     * there is no recording to hear, and the parameters it starts on are the
+     * Lead preset, which says what it is well enough. The row's own play button
+     * is one click away for anyone who wants to hear it straight off.
+     */
+    addSynthChannel: () => {
+      pushUndo('add-synth-channel')
+      set((state) => ({
+        channels: [
+          ...state.channels,
+          makeSynthChannel(
+            nextNumberedName(
+              SYNTH_CHANNEL_NAME_BASE,
+              state.channels.map((channel) => channel.name)
+            ),
+            state.channels.length
+          )
+        ]
+      }))
+    },
+
+    updateSynth: (channelId, patch, key) => {
+      const channel = get().channels.find((item) => item.id === channelId)
+      if (channel?.type !== 'synth') return
+
+      const synth = clampSynthParams({ ...channel.synth, ...patch })
+      // A patch that changes nothing is not an edit, and an undo step that puts
+      // back what is already there is a step the user has to press twice.
+      if (sameSynthParams(channel.synth, synth)) return
+
+      pushUndo(`synth:${channelId}:${key ?? 'edit'}`, key !== undefined)
+      set((state) => ({
+        channels: state.channels.map((item) =>
+          item.id === channelId && item.type === 'synth' ? { ...item, synth } : item
+        )
+      }))
+    },
+
+    /**
+     * A preset is a whole set of parameters at once, so it goes through
+     * `updateSynth` with no key: it is a discrete edit, its own undo step even
+     * when the next preset is pressed in the same second. Clicking through four
+     * sounds and then pressing Ctrl+Z should give back the one before, not the
+     * first of the four.
+     */
+    applySynthPreset: (channelId, presetId) => {
+      const preset = SYNTH_PRESETS.find((item) => item.id === presetId)
+      if (preset === undefined) return
+      get().updateSynth(channelId, preset.params)
+    },
+
+    addEffect: (channelId, type) => {
+      if (!get().channels.some((channel) => channel.id === channelId)) return
+      pushUndo(`effect-add:${channelId}`)
+      patchEffects(channelId, (effects) => [...effects, makeEffect(type)])
+    },
+
+    removeEffect: (channelId, effectId) => {
+      pushUndo(`effect-remove:${channelId}:${effectId}`)
+      patchEffects(channelId, (effects) => effects.filter((effect) => effect.id !== effectId))
+    },
+
+    updateEffect: (channelId, effectId, params, key) => {
+      pushUndo(`effect:${channelId}:${effectId}:${key ?? 'edit'}`, key !== undefined)
+      patchEffects(channelId, (effects) =>
+        effects.map((effect) =>
+          effect.id === effectId ? withEffectParams(effect, params) : effect
+        )
+      )
+    },
+
+    toggleEffect: (channelId, effectId) => {
+      pushUndo(`effect-toggle:${channelId}:${effectId}`)
+      patchEffects(channelId, (effects) =>
+        effects.map((effect) =>
+          effect.id === effectId ? { ...effect, enabled: !effect.enabled } : effect
+        )
+      )
+    },
+
+    /**
+     * One place up or down, swapping with the neighbour it moved past.
+     *
+     * A no-op at either end rather than a wrap: the ends of a chain are the ends,
+     * and an effect that jumped from the top to the bottom when the up arrow was
+     * pressed would be a chain that reshuffles itself under the mouse.
+     *
+     * The array is rebuilt rather than spliced in place — everything in this
+     * store is treated as immutable, and a chain quietly mutated where it lay
+     * would be a change no `set` ever announced.
+     */
+    moveEffect: (channelId, effectId, delta) => {
+      const effects = get().channels.find((channel) => channel.id === channelId)?.effects
+      if (effects === undefined) return
+
+      const at = effects.findIndex((effect) => effect.id === effectId)
+      const to = at + delta
+      if (at < 0 || to < 0 || to >= effects.length) return
+
+      pushUndo(`effect-move:${channelId}:${effectId}`)
+      patchEffects(channelId, (current) => {
+        const moved = [...current]
+        const [effect] = moved.splice(at, 1)
+        moved.splice(to, 0, effect)
+        return moved
+      })
     },
 
     /**
@@ -2524,6 +3049,10 @@ export const useDawStore = create<DawState>((set, get) => {
         playingChannelIds: state.playingChannelIds.filter((playing) => playing !== channelId),
         pianoRollChannelId:
           state.pianoRollChannelId === channelId ? null : state.pianoRollChannelId,
+        synthPanelChannelId:
+          state.synthPanelChannelId === channelId ? null : state.synthPanelChannelId,
+        effectsPanelChannelId:
+          state.effectsPanelChannelId === channelId ? null : state.effectsPanelChannelId,
         patterns: state.patterns.map((pattern) => ({
           ...pattern,
           notesByChannel: withoutKey(pattern.notesByChannel, channelId),
@@ -2565,6 +3094,7 @@ export const useDawStore = create<DawState>((set, get) => {
         playlistBars: MIN_PLAYLIST_BARS,
         songStartBar: 0,
         pianoRollChannelId: null,
+        effectsPanelChannelId: null,
         playback: null,
         bpm: DEFAULT_BPM,
         projectPath: null,
@@ -2631,6 +3161,7 @@ export const useDawStore = create<DawState>((set, get) => {
         songStartBar: parsed.project.songStartBar,
         playingChannelIds: [],
         pianoRollChannelId: null,
+        effectsPanelChannelId: null,
         playback: null,
         bpm: parsed.project.bpm,
         projectPath: opened.path,
@@ -2641,6 +3172,7 @@ export const useDawStore = create<DawState>((set, get) => {
             : `${loaded.missingCount} 个通道的采样文件找不到，它们显示为「采样缺失」`
       })
       applyMix(loaded.channels)
+      applyEffects(loaded.channels)
       showToast('已打开工程')
     },
 
@@ -2833,6 +3365,48 @@ export const useDawStore = create<DawState>((set, get) => {
       get().stopSequence()
       set({ pianoRollChannelId: null })
       useWindowStore.getState().closeWindow('piano-roll')
+    },
+
+    /**
+     * Opening the parameter panel changes nothing about the transport.
+     *
+     * Deliberately unlike the roll's: this panel makes no sound of its own, and
+     * the one thing you want while turning a cutoff knob is to hear the part it
+     * is playing. So a running transport is left exactly where it was.
+     *
+     * A sampler channel has no parameters to show, so it opens nothing — the
+     * window that is already there keeps pointing at whatever it was showing.
+     */
+    openSynthPanel: (channelId) => {
+      const channel = get().channels.find((item) => item.id === channelId)
+      if (channel?.type !== 'synth') return
+      set({ synthPanelChannelId: channelId })
+      useWindowStore.getState().openWindow('synth-panel')
+    },
+
+    closeSynthPanel: () => {
+      set({ synthPanelChannelId: null })
+      useWindowStore.getState().closeWindow('synth-panel')
+    },
+
+    /**
+     * Opening the effect chain changes nothing about the transport, for exactly
+     * the reason the parameter panel does not: the point of the panel is to turn
+     * a knob on a chain while the part it belongs to is playing, and stopping the
+     * transport to open it would take away the thing being listened to.
+     *
+     * Any channel will do, sampler or synth — which is the one place this differs
+     * from `openSynthPanel`, and it differs because a reverb is not an instrument.
+     */
+    openEffectsPanel: (channelId) => {
+      if (!get().channels.some((channel) => channel.id === channelId)) return
+      set({ effectsPanelChannelId: channelId })
+      useWindowStore.getState().openWindow('effects-panel')
+    },
+
+    closeEffectsPanel: () => {
+      set({ effectsPanelChannelId: null })
+      useWindowStore.getState().closeWindow('effects-panel')
     },
 
     toggleLoop: () => set((state) => ({ loopEnabled: !state.loopEnabled })),
@@ -3080,13 +3654,21 @@ export const useDawStore = create<DawState>((set, get) => {
     previewPitch: async (channelId, pitch) => {
       const state = get()
       const channel = state.channels.find((item) => item.id === channelId)
-      const sample = channel && state.samples.find((item) => item.id === channel.sampleId)
+      if (channel === undefined) return
+      const voice = voiceOf(state, channel)
       const strip = getStrip(channelId)
-      if (!sample || !strip) return
+      if (voice === null || strip === undefined) return
 
       await resumeAudioContext()
-      const voice = voiceForPitch(sample.zones, pitch)
-      triggerStrip(strip, voice.buffer, voice.shift)
+      if (voice.kind === 'synth') {
+        // The pitch *is* the sound here, so this is the same one-note audition
+        // the channel's own play button gives, at the key that was clicked.
+        playOn(strip, voice, [auditionNote(voice.params, pitch)], getAudioContext().currentTime)
+        return
+      }
+
+      const picked = voiceForPitch(voice.zones, pitch)
+      triggerStrip(strip, picked.buffer, picked.shift)
     },
 
     /**
@@ -3175,14 +3757,16 @@ export const useDawStore = create<DawState>((set, get) => {
      * and the end is reported by the last voice's `onended` — no timers involved.
      */
     playChannelSequence: async (channelId) => {
-      const channel = get().channels.find((item) => item.id === channelId)
+      const initial = get()
+      const channel = initial.channels.find((item) => item.id === channelId)
+      if (channel === undefined) return
       // Notes come from the current pattern, which is what makes switching
       // pattern change what plays without touching any channel.
-      const notes = selectNotes(get(), channelId)
-      if (!channel || notes.length === 0) return
-      const sample = get().samples.find((item) => item.id === channel.sampleId)
+      const notes = selectNotes(initial, channelId)
+      if (notes.length === 0) return
+      const voice = voiceOf(initial, channel)
       const strip = getStrip(channelId)
-      if (!sample || !strip) return
+      if (voice === null || strip === undefined) return
 
       get().stopSequence()
       await resumeAudioContext()
@@ -3199,7 +3783,7 @@ export const useDawStore = create<DawState>((set, get) => {
         }
       })
 
-      playNoteSequence(strip, sample.zones, notes, startAtSec, () => {
+      playOn(strip, voice, notes, startAtSec, () => {
         // Guard against a stale callback from an earlier run of the same channel.
         set((state) => (state.playback?.channelId === channelId ? { playback: null } : {}))
       })
@@ -3223,11 +3807,12 @@ export const useDawStore = create<DawState>((set, get) => {
     playPianoRoll: async (channelId) => {
       const state = get()
       const channel = state.channels.find((item) => item.id === channelId)
+      if (channel === undefined) return
       const notes = selectNotes(state, channelId)
-      if (!channel || notes.length === 0) return
-      const sample = state.samples.find((item) => item.id === channel.sampleId)
+      if (notes.length === 0) return
+      const voice = voiceOf(state, channel)
       const strip = getStrip(channelId)
-      if (!sample || !strip) return
+      if (voice === null || strip === undefined) return
 
       get().stopSequence()
       await resumeAudioContext()
@@ -3344,7 +3929,7 @@ export const useDawStore = create<DawState>((set, get) => {
      */
     playSong: async () => {
       const state = get()
-      const { playlistClips, channels, samples, bpm } = state
+      const { playlistClips, channels, bpm } = state
       if (playlistClips.length === 0) return
 
       // Read before the transport is torn down rather than after
@@ -3382,12 +3967,16 @@ export const useDawStore = create<DawState>((set, get) => {
       for (const [channelId, notes] of ahead) {
         if (notes.length === 0) continue
         const channel = channels.find((item) => item.id === channelId)
-        const sample = channel && samples.find((item) => item.id === channel.sampleId)
+        if (channel === undefined) continue
+        const voice = voiceOf(state, channel)
         const strip = getStrip(channelId)
-        if (!channel || !sample || !strip) continue
+        if (voice === null || strip === undefined) continue
         scheduled.push({
           strip,
-          zones: sample.zones,
+          // Bound here, where the kind of channel is still known: `playArrangement`
+          // runs channels without having to know what is under them.
+          play: (channelNotes, atSec, onFinished) =>
+            playOn(strip, voice, channelNotes, atSec, onFinished),
           notes: [...notes].sort((a, b) => a.startSec - b.startSec)
         })
         channelIds.push(channelId)

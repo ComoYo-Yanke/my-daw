@@ -755,6 +755,37 @@ body {
   color: var(--ev-c-text-3);
 }
 
+/* The rack's own toolbar: the one thing you add here without going to the
+   library, plus the count that used to be the toolbar's. */
+.rack-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.rack-bar__button {
+  padding: 0 12px;
+  border: 1px solid var(--daw-border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--ev-c-text-2);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 24px;
+  cursor: pointer;
+}
+
+.rack-bar__button:hover {
+  border-color: var(--daw-accent);
+  color: var(--ev-c-text-1);
+}
+
+.rack-bar__count {
+  font-size: 12px;
+  color: var(--ev-c-text-3);
+}
+
 .rack {
   display: flex;
   flex-direction: column;
@@ -904,6 +935,16 @@ body {
 }
 
 .waveform {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* A synth's thumbnail: the drawn cycle rather than a peak envelope, but the same
+   box, so the two kinds of channel line up in the rack. No colour here — the
+   trace is two strokes and they are set on the elements, which is where the
+   difference between them lives. */
+.synth-wave {
   display: block;
   width: 100%;
   height: 100%;
@@ -2694,4 +2735,429 @@ body {
   font-size: 12px;
   line-height: 1.6;
   color: var(--ev-c-text-3);
+}
+
+/* Synth panel
+
+   Three groups of controls — oscillators, envelope, filter — in cards that wrap
+   into as many columns as the window is wide, and it is the panel that scrolls:
+   the window body is `overflow: hidden`, so nothing here may rely on being
+   clipped by it. */
+
+.synth {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 12px;
+  min-height: 0;
+  padding: 12px 16px;
+  overflow: auto;
+}
+
+.synth__header {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.synth__label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ev-c-text-3);
+}
+
+/* The presets. A row of chips rather than a dropdown: there are four of them, and
+   which one is on is worth seeing without opening anything. */
+.synth__preset {
+  padding: 0 10px;
+  border: 1px solid var(--daw-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ev-c-text-1);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.synth__preset:hover {
+  border-color: var(--daw-accent);
+  color: var(--daw-accent);
+}
+
+/* Set only while the parameters are still exactly the preset's, which is true of
+   nothing the moment a knob is touched — see `sameSynthParams`. */
+.synth__preset[aria-pressed='true'] {
+  border-color: var(--daw-accent);
+  background: var(--daw-accent-soft);
+  color: var(--daw-accent);
+  font-weight: 700;
+}
+
+.synth__hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ev-c-text-3);
+}
+
+.synth__body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  align-content: start;
+}
+
+.synth__group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--daw-border);
+  border-radius: 6px;
+  background: var(--daw-row);
+}
+
+/* A label and the control it names, on one line. */
+.synth__field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.synth__field-label {
+  width: 28px;
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--ev-c-text-3);
+}
+
+.synth__select {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: #191920;
+  color: var(--ev-c-text-1);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.synth__select:hover {
+  border-color: var(--daw-accent);
+}
+
+.synth__toggle {
+  display: inline-flex;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.synth__toggle-button {
+  padding: 0 12px;
+  border: none;
+  background: transparent;
+  color: var(--ev-c-text-2);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.synth__toggle-button:hover {
+  color: var(--ev-c-text-1);
+}
+
+.synth__toggle-button[aria-pressed='true'] {
+  background: var(--daw-accent-soft);
+  color: var(--daw-accent);
+  font-weight: 700;
+}
+
+.synth__knobs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+/* The detune knob with one oscillator: still live, since the value is kept for
+   the second oscillator, and dimmed so it does not read as the one control here
+   that does nothing. */
+.synth__knob[data-off='true'] {
+  opacity: 0.4;
+}
+
+/* Both graphs.
+ *
+ * `preserveAspectRatio="none"` stretches a square viewBox over a wide box, so
+ * the stroke comes out of the stretch scaled with it — hence
+ * `vector-effect`, which takes the widths back out of the transform and keeps
+ * them in pixels. Without it a line is thin where the box is wide. */
+.synth__graph {
+  display: block;
+  width: 100%;
+  height: 54px;
+  margin-top: 2px;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: #191920;
+}
+
+.synth__graph-line {
+  fill: none;
+  stroke: var(--daw-accent);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.synth__graph-mark {
+  stroke: #3a3a46;
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+}
+
+/* The way into a channel's effect chain, in the rack row. */
+.channel__fx {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  min-width: 26px;
+  height: 22px;
+  padding: 0 5px;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ev-c-text-2);
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.channel__fx:hover {
+  background: var(--ev-c-gray-3);
+  color: var(--ev-c-text-1);
+}
+
+.channel__fx[aria-pressed='true'] {
+  border-color: var(--daw-accent);
+  background: var(--daw-accent-soft);
+  color: var(--daw-accent);
+}
+
+/* How many effects are on the chain, tucked into the corner rather than widening
+   the button: the row is already the widest thing in the app, and a chain of four
+   would otherwise push every row in the rack out to a new width. */
+.channel__fx-count {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  min-width: 12px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--daw-accent);
+  color: #16161c;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 12px;
+  text-align: center;
+}
+
+/* Effect chain panel.
+ *
+ * One card per effect, drawn top to bottom in the order the sound goes through
+ * them. That order is the one thing a chain has that a collection of knobs does
+ * not, so the layout is doing work here rather than just stacking boxes: the
+ * column of cards is read as a signal path. */
+.effects {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px 16px;
+  overflow: auto;
+}
+
+.effects__header {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.effects__label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--ev-c-text-3);
+}
+
+/* The three things that can be added, as chips rather than a dropdown, for the
+   same reason the synth's presets are: there are three of them, and there is
+   nothing to hide behind a click. */
+.effects__add {
+  padding: 0 10px;
+  border: 1px solid var(--daw-border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ev-c-text-1);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 22px;
+  cursor: pointer;
+}
+
+.effects__add:hover {
+  border-color: var(--daw-accent);
+  color: var(--daw-accent);
+}
+
+.effects__hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ev-c-text-3);
+}
+
+.effects__empty {
+  margin: 0;
+  padding: 10px;
+  border: 1px dashed var(--daw-border);
+  border-radius: 6px;
+  color: var(--ev-c-text-3);
+  font-size: 12px;
+}
+
+.effects__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.effect {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--daw-border);
+  border-radius: 6px;
+  background: var(--daw-row);
+}
+
+/* Bypassed. Dimmed rather than taken off the list, because everything about it is
+   still there — its place in the chain, its parameters, its name — and the card
+   is what says so. */
+.effect[data-enabled='false'] {
+  opacity: 0.45;
+}
+
+.effect__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.effect__power {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: var(--ev-c-gray-3);
+  color: var(--ev-c-text-2);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.effect__power:hover {
+  background: var(--ev-c-gray-2);
+  color: var(--ev-c-text-1);
+}
+
+.effect__power[aria-pressed='true'] {
+  border-color: transparent;
+  background: var(--daw-accent);
+  color: #16161c;
+}
+
+/* Where this effect sits in the chain, so the order is readable off the cards
+   even when two of them are the same kind. */
+.effect__index {
+  flex-shrink: 0;
+  min-width: 14px;
+  color: var(--ev-c-text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.effect__name {
+  flex: 1;
+  min-width: 0;
+  color: var(--ev-c-text-1);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.effect__move,
+.effect__remove {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ev-c-text-2);
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.effect__move:hover:not(:disabled),
+.effect__remove:hover {
+  background: var(--ev-c-gray-3);
+  color: var(--ev-c-text-1);
+}
+
+/* At the top or bottom of the chain there is nowhere to go. Dimmed but not
+   removed: an arrow that disappeared at the ends would make the two cards at the
+   ends a different shape from the rest. */
+.effect__move:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.effect__remove:hover {
+  border-color: #ff8a8a;
+  color: #ff8a8a;
+}
+
+.effect__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.effect__knobs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
 }

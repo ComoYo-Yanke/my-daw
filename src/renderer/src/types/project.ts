@@ -12,6 +12,15 @@
 
 import { MAX_CURVE_VALUE, MIN_CURVE_VALUE, normalizeCurve, type CurvePoint } from './curve'
 import {
+  clampDelayParams,
+  clampDistortionParams,
+  clampReverbParams,
+  DEFAULT_DELAY_PARAMS,
+  DEFAULT_DISTORTION_PARAMS,
+  DEFAULT_REVERB_PARAMS,
+  type Effect
+} from './effect'
+import {
   clampLengthBars,
   DEFAULT_BPM,
   DEFAULT_LENGTH_BARS,
@@ -32,11 +41,21 @@ import {
   MIN_CLIP_LENGTH_BARS,
   MIN_PLAYLIST_BARS,
   type Channel,
+  type ChannelType,
   type DawState,
   type Pattern,
   type PlaylistClip,
-  type PlaylistTrack
+  type PlaylistTrack,
+  type SamplerChannel
 } from '../state/useDawStore'
+import {
+  clampSynthParams,
+  DEFAULT_SYNTH_PARAMS,
+  FILTER_TYPES,
+  OSCILLATOR_COUNTS,
+  WAVEFORMS,
+  type SynthParams
+} from './synth'
 
 /** 文件头的标识。用来认出「这是个 .mydaw」，以及挡住误打开的文件。 */
 export const PROJECT_FORMAT = 'mydaw'
@@ -59,6 +78,13 @@ export const PROJECT_FORMAT = 'mydaw'
  * 删字段同样没动版本号。`playMode`（Pattern / Song 那个开关）不存在了：空格播什么由
  * 鼠标所在的窗口决定，没有东西可切换。老文件里多出来的这个字段读的时候被忽略，所以
  * 老工程照常打开；反过来的代价和上面一样——老版本打开新文件时会回落成 `'pattern'`。
+ *
+ * 通道长出 `type` 和 `synth` 也没动版本号：没有 `type` 的文件里每一条通道都是采样器，
+ * 而这正是读不到 `type` 时的兜底，所以 v1/v2 的工程打开后一模一样。
+ *
+ * 通道再长出 `effects` 同样没动版本号。老文件里没有这个字段，回落到空链 —— 那正是老工程
+ * 本来的样子：它没有效果器。反过来的代价还是上面那一条——更老的版本打开这一版存的文件时，
+ * 效果链会被整条丢掉，也是「能打开但缺东西」。
  */
 export const PROJECT_VERSION = 2
 
@@ -73,12 +99,36 @@ export const DEFAULT_TIME_SIGNATURE = '4/4'
 /**
  * 一个通道在文件里的样子。
  *
- * 和内存里的 `Channel` 只差一处：它记采样从哪来，而不是记一个只在这次运行里有效的
- * `sampleId`。
+ * 和内存里的 `Channel` 有三处不一样。它记采样从哪来（`samplePath`），而不是记一个只在
+ * 这次运行里有效的 `sampleId`。它带着 `type`，因为文件里的通道不再都是采样器了。而
+ * `synth` 只在合成器通道上有：采样器没有参数可写，给每一条鼓都存一份用不上的参数，
+ * 等于在文件里说一件不成立的事。
+ *
+ * 并列写而不是从 `Channel` 推导，是因为它要同时容下两种通道 —— 从联合类型 `Omit` 出来的
+ * 东西会把两条分支揉在一起，反而看不出哪条该带什么。
  */
-export type ProjectChannel = Omit<Channel, 'sampleId'> & {
-  /** 磁盘上的绝对路径，或者 `library://` 开头的内置采样伪路径。 */
+export type ProjectChannel = {
+  id: string
+  name: string
+  type: ChannelType
+  /** 磁盘上的绝对路径，或者 `library://` 开头的内置采样伪路径。合成器通道是空串。 */
   samplePath: string
+  /** 合成器通道才有 —— 见上面。 */
+  synth?: SynthParams
+  /**
+   * 这个通道的效果链，按链上的顺序。
+   *
+   * 两种通道都有 —— 采样器和合成器一样要混响，所以它不像 `synth` 那样是可选字段。老文件
+   * 里没有这一项，回落到空链。
+   */
+  effects: Effect[]
+  volume: number
+  pan: number
+  muted: boolean
+  soloed: boolean
+  color: string
+  stepCount: StepCount
+  swing: number
 }
 
 export type ProjectFile = {
@@ -122,9 +172,39 @@ const FALLBACK_TRACK_NAME = 'Track'
  * 找不到文件的采样在 `missingSamplePaths` 里留着自己的原路径，所以「打开一份采样丢了
  * 的工程、再存回去」不会把路径抹掉 —— 用户把文件放回去以后还能对上。
  */
-function samplePathOf(state: DawState, channel: Channel): string {
+function samplePathOf(state: DawState, channel: SamplerChannel): string {
   const sample = state.samples.find((item) => item.id === channel.sampleId)
   return sample?.path ?? state.missingSamplePaths[channel.sampleId] ?? ''
+}
+
+/** 两种通道共有的那部分字段，原样搬过去。 */
+function channelBaseOf(channel: Channel): Omit<ProjectChannel, 'type' | 'samplePath' | 'synth'> {
+  return {
+    id: channel.id,
+    name: channel.name,
+    // 原样搬过去。效果器本身是纯数据，没有 id 之外的东西指向这次运行里的任何对象。
+    effects: channel.effects,
+    volume: channel.volume,
+    pan: channel.pan,
+    muted: channel.muted,
+    soloed: channel.soloed,
+    color: channel.color,
+    stepCount: channel.stepCount,
+    swing: channel.swing
+  }
+}
+
+/**
+ * 一个通道写进文件的样子。
+ *
+ * 采样器那条留一个空的 `samplePath` 是有意义的：路径丢了但要保住「它是个采样器」这件事，
+ * 通道才会以「采样缺失」的样子回来，而不是变成一个合成器。
+ */
+function serializeChannel(state: DawState, channel: Channel): ProjectChannel {
+  if (channel.type === 'synth') {
+    return { ...channelBaseOf(channel), type: 'synth', samplePath: '', synth: channel.synth }
+  }
+  return { ...channelBaseOf(channel), type: 'sampler', samplePath: samplePathOf(state, channel) }
 }
 
 /** 把当前工程写成文件内容。 */
@@ -135,18 +215,7 @@ export function serializeProject(state: DawState): ProjectFile {
     bpm: state.bpm,
     timeSignature: DEFAULT_TIME_SIGNATURE,
     currentPatternId: state.currentPatternId,
-    channels: state.channels.map((channel) => ({
-      id: channel.id,
-      name: channel.name,
-      samplePath: samplePathOf(state, channel),
-      volume: channel.volume,
-      pan: channel.pan,
-      muted: channel.muted,
-      soloed: channel.soloed,
-      color: channel.color,
-      stepCount: channel.stepCount,
-      swing: channel.swing
-    })),
+    channels: state.channels.map((channel) => serializeChannel(state, channel)),
     // 音符和步进是纯数据，跟着 pattern 原样走。
     patterns: state.patterns,
     playlistTracks: state.playlistTracks,
@@ -247,16 +316,24 @@ function id(value: unknown): string {
   return str(value, crypto.randomUUID())
 }
 
+/**
+ * 文件里的通道。
+ *
+ * 没有 `type` 的文件是合成器出现之前存的，里面每一条都是采样器 —— 这不是特例分支，正是
+ * 「认不出 type 就当采样器」这条兜底的默认结果。
+ */
 function parseChannels(value: unknown): ProjectChannel[] {
   if (!Array.isArray(value)) return []
 
   const channels: ProjectChannel[] = []
   for (const entry of value) {
     if (!isRecord(entry)) continue
-    channels.push({
+
+    const base = {
       id: id(entry.id),
       name: str(entry.name, FALLBACK_CHANNEL_NAME),
-      samplePath: str(entry.samplePath, ''),
+      // 没有这个字段的老文件回落到空链，也就是「没有效果器」——老工程本来的样子。
+      effects: parseEffects(entry.effects),
       volume: clamp(num(entry.volume, FALLBACK_VOLUME), 0, 1),
       pan: clamp(num(entry.pan, FALLBACK_PAN), -1, 1),
       muted: bool(entry.muted, false),
@@ -264,9 +341,126 @@ function parseChannels(value: unknown): ProjectChannel[] {
       color: str(entry.color, FALLBACK_COLOR),
       stepCount: parseStepCount(entry.stepCount),
       swing: clamp(num(entry.swing, 0), 0, 100)
-    })
+    }
+
+    if (entry.type === 'synth') {
+      channels.push({
+        ...base,
+        type: 'synth',
+        samplePath: '',
+        // 少了这一整块就退回默认参数：一个还没调过的合成器，仍然是一个能弹的合成器。
+        synth: parseSynth(entry.synth)
+      })
+      continue
+    }
+
+    channels.push({ ...base, type: 'sampler', samplePath: str(entry.samplePath, '') })
   }
   return channels
+}
+
+/**
+ * 一组合成器参数。
+ *
+ * 逐字段兜底：缺一个就补一个默认值。一组被手改坏的参数应该少一个数，而不是让整个通道
+ * 变成别的东西 —— 和工程里其它地方一样，能读的尽量读。
+ *
+ * 认不出的波形、滤波器、振荡器个数一律回到默认值，而不是硬塞进列表里：它们不是数值，
+ * 没有「就近」这一说。夹取交给 `clampSynthParams`，和面板写进来的走同一条路，于是无论
+ * 从哪边进来，音频那边拿到的都是一样合法的数。
+ */
+function parseSynth(value: unknown): SynthParams {
+  if (!isRecord(value)) return DEFAULT_SYNTH_PARAMS
+
+  return clampSynthParams({
+    waveform: WAVEFORMS.find((item) => item === value.waveform) ?? DEFAULT_SYNTH_PARAMS.waveform,
+    oscCount:
+      OSCILLATOR_COUNTS.find((item) => item === value.oscCount) ?? DEFAULT_SYNTH_PARAMS.oscCount,
+    detuneCents: num(value.detuneCents, DEFAULT_SYNTH_PARAMS.detuneCents),
+    attackSec: num(value.attackSec, DEFAULT_SYNTH_PARAMS.attackSec),
+    decaySec: num(value.decaySec, DEFAULT_SYNTH_PARAMS.decaySec),
+    sustain: num(value.sustain, DEFAULT_SYNTH_PARAMS.sustain),
+    releaseSec: num(value.releaseSec, DEFAULT_SYNTH_PARAMS.releaseSec),
+    filterType:
+      FILTER_TYPES.find((item) => item === value.filterType) ?? DEFAULT_SYNTH_PARAMS.filterType,
+    cutoffHz: num(value.cutoffHz, DEFAULT_SYNTH_PARAMS.cutoffHz),
+    q: num(value.q, DEFAULT_SYNTH_PARAMS.q)
+  })
+}
+
+/**
+ * 一条效果链。
+ *
+ * 数组的顺序就是链上的顺序，原样保留：链是有序的，先失真再延迟和先延迟再失真是两个声音，
+ * 所以这里不做任何整理。
+ *
+ * 认不出 `type` 的那一格整条丢掉，和认不出的波形同一个原则 —— 它不是数值，没有「就近」
+ * 可言，而一个不知道该做成什么的效果器留在链上只会挡住它后面的。
+ */
+function parseEffects(value: unknown): Effect[] {
+  if (!Array.isArray(value)) return []
+
+  const effects: Effect[] = []
+  for (const entry of value) {
+    if (!isRecord(entry)) continue
+    const effect = parseEffect(entry)
+    if (effect !== null) effects.push(effect)
+  }
+  return effects
+}
+
+/**
+ * 一格效果器。认不出 `type` 就是 `null`，由上面丢掉。
+ *
+ * 每条分支和 `parseSynth` 是同一套做法：逐字段兜底，缺一个就补一个默认值，最后交给对应的
+ * `clampXxxParams` 夹取 —— 和面板写进来的走同一条路，于是无论从哪边进来，音频那边拿到的
+ * 都是一样合法的数。
+ *
+ * 这里没有走 `withEffectParams`，因为它是「把参数放回已经存在的那一格上」，而这里的问题
+ * 是「照着文件搭出那一格」。夹取用的是同一组函数，所以出口是一样的。
+ */
+function parseEffect(entry: Record<string, unknown>): Effect | null {
+  const effectId = id(entry.id)
+  const enabled = bool(entry.enabled, true)
+  const params = isRecord(entry.params) ? entry.params : {}
+
+  switch (str(entry.type, '')) {
+    case 'reverb':
+      return {
+        id: effectId,
+        type: 'reverb',
+        enabled,
+        params: clampReverbParams({
+          roomSize: num(params.roomSize, DEFAULT_REVERB_PARAMS.roomSize),
+          damping: num(params.damping, DEFAULT_REVERB_PARAMS.damping),
+          wet: num(params.wet, DEFAULT_REVERB_PARAMS.wet)
+        })
+      }
+    case 'delay':
+      return {
+        id: effectId,
+        type: 'delay',
+        enabled,
+        params: clampDelayParams({
+          timeSec: num(params.timeSec, DEFAULT_DELAY_PARAMS.timeSec),
+          feedback: num(params.feedback, DEFAULT_DELAY_PARAMS.feedback),
+          wet: num(params.wet, DEFAULT_DELAY_PARAMS.wet)
+        })
+      }
+    case 'distortion':
+      return {
+        id: effectId,
+        type: 'distortion',
+        enabled,
+        params: clampDistortionParams({
+          drive: num(params.drive, DEFAULT_DISTORTION_PARAMS.drive),
+          toneHz: num(params.toneHz, DEFAULT_DISTORTION_PARAMS.toneHz),
+          outputGain: num(params.outputGain, DEFAULT_DISTORTION_PARAMS.outputGain)
+        })
+      }
+    default:
+      return null
+  }
 }
 
 /** A step count that is not one of the four the switch offers falls back to the default. */
