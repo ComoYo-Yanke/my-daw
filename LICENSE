@@ -1,0 +1,136 @@
+CoMoYo-Yanke Strict Open Source License
+Version 1.0
+Copyright (c) 2026 CoMoYo-Yanke. All rights reserved.
+
+1. Definitions
+For the purposes of this License:
+
+"License" means this CoMoYo-Yanke Strict Open Source License, Version 1.0.
+
+"Licensor" means CoMoYo-Yanke, the copyright holder and original author of the Work.
+
+"Work" means the software, source code, object code, documentation, configuration files, assets, and any other materials made available by the Licensor under this License.
+
+"You" or "Your" means any individual or legal entity exercising rights under this License.
+
+"Modified Version" means any work based on, derived from, incorporating, or otherwise modifying the Work, in whole or in part.
+
+"Distribute" means to sell, transfer, publish, upload, disclose, sublicense, or otherwise make available the Work or a Modified Version to any third party.
+
+"Commercial Use" means any use of the Work or a Modified Version primarily intended for or directed toward commercial advantage, monetary compensation, paid services, revenue generation, or business operations.
+
+"Contribution" means any code, documentation, translation, patch, or other material intentionally submitted by You to the Licensor or to a project governed by this License.
+
+2. Grant of Rights
+Subject to Your full compliance with this License, the Licensor grants You a worldwide, non-exclusive, royalty-free, revocable copyright license to:
+
+use, reproduce, and study the Work;
+
+modify the Work and create Modified Versions;
+
+distribute the Work and Modified Versions,
+
+provided that all conditions in this License are satisfied.
+
+No rights are granted by implication, estoppel, or otherwise, except as expressly stated in this License.
+
+3. Conditions
+3.1 Attribution
+You must retain, in all copies or substantial portions of the Work and any Modified Version:
+
+the original copyright notice;
+
+the name CoMoYo-Yanke;
+
+this License text;
+
+a clear statement that the Work is licensed under this License.
+
+You must also provide reasonable attribution in any user interface, documentation, README, about page, or distribution package associated with the Work or a Modified Version.
+
+3.2 License Notice and Change Documentation
+Any Modified Version must include a prominent notice stating:
+
+that the version has been modified;
+
+the date of modification;
+
+the identity of the person or entity that modified it;
+
+a summary of the material changes.
+
+3.3 Copyleft Requirement
+If You distribute the Work or any Modified Version, You must license the entire distribution under this same License, Version 1.0, without adding or removing terms.
+
+You may not relicense the Work or any Modified Version under any other license, including any permissive, proprietary, or incompatible copyleft license.
+
+3.4 Source Code Availability
+If You distribute the Work or a Modified Version in object code or executable form, You must also make the complete corresponding source code available under this License, at no additional charge beyond a reasonable cost of physical distribution.
+
+3.5 Commercial Use Declaration
+Commercial Use is permitted only if You:
+
+provide the Licensor with prior written notice describing Your intended Commercial Use;
+
+clearly identify the Work and the extent of its use;
+
+comply with any additional written conditions imposed by the Licensor for such Commercial Use.
+
+The Licensor may require a separate commercial agreement, fee, or authorization for Commercial Use. Failure to obtain such authorization terminates Your rights under this License.
+
+3.6 No Additional Restrictions
+You may not impose any legal, technical, contractual, or digital rights management restriction that prevents any recipient from exercising the rights granted under this License.
+
+3.7 Network Use
+If You make the Work or a Modified Version available to users over a network, You must:
+
+prominently display this License and the attribution required in Section 3.1;
+
+provide access to the complete corresponding source code;
+
+preserve all notices and modification records.
+
+4. Contributions
+Unless otherwise agreed in writing, any Contribution You intentionally submit to the Licensor or to a project governed by this License shall be licensed under the terms of this License.
+
+You represent that You have the legal right to submit any Contribution and that Your Contribution does not infringe the rights of any third party.
+
+5. Patent License and Termination
+Subject to Your compliance with this License, the Licensor grants You a non-exclusive, worldwide, royalty-free patent license to make, use, sell, offer for sale, import, and otherwise exploit the Work, but only to the extent necessary to exercise the rights granted under this License.
+
+If You initiate any patent litigation or other legal proceeding alleging that the Work or a Contribution infringes a patent, all rights granted to You under this License shall terminate immediately.
+
+6. Trademarks
+This License does not grant You any right to use the name, logo, trademark, service mark, or branding of CoMoYo-Yanke, except for reasonable attribution as required by this License.
+
+You may not use the Licensor's name or marks to endorse, promote, or imply affiliation with any Modified Version without prior written permission.
+
+7. Termination
+Your rights under this License terminate automatically if You violate any term of this License.
+
+Upon termination, You must immediately:
+
+stop all use and distribution of the Work and Modified Versions;
+
+delete or destroy all copies in Your possession or control, unless otherwise required by law;
+
+cease all Commercial Use.
+
+The Licensor may reinstate Your rights in writing. Reinstatement does not limit the Licensor's right to enforce violations.
+
+8. Disclaimer of Warranty
+THE WORK IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+
+THE LICENSOR DOES NOT WARRANT THAT THE WORK WILL BE ERROR-FREE, SECURE, OR UNINTERRUPTED.
+
+9. Limitation of Liability
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR SHALL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR FOR ANY LOSS OF PROFITS, DATA, BUSINESS, OR GOODWILL, ARISING OUT OF OR RELATING TO THE WORK OR THIS LICENSE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+10. Severability
+If any provision of this License is held unenforceable, that provision shall be modified to the minimum extent necessary to make it enforceable, and the remaining provisions shall remain in full force and effect.
+
+11. Entire Agreement
+This License constitutes the entire agreement between You and the Licensor regarding the Work and supersedes any prior or contemporaneous agreements relating to the Work.
+
+12. Acceptance
+By using, copying, modifying, distributing, or otherwise exercising rights in the Work, You accept and agree to be bound by this License.
