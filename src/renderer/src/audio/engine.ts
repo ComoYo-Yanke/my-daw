@@ -7,12 +7,18 @@
 //
 // Graph, per channel:
 //
-//   source -> GainNode -> GainNode -> StereoPannerNode -> masterGain -> destination
-//  (per voice) (velocity) (per channel, persistent)     (once, app-wide)
+//   source -> GainNode -> [GainNode] -> GainNode -> StereoPannerNode -> masterGain
+//  (per voice) (velocity)   (curve)   (per channel, persistent)       (app-wide)
 //
 // The master gain is the app's own output level rather than a channel's: it sits
 // after every strip, so turning it down turns everything down together and leaves
 // each channel's own volume, pan and mute exactly where they were.
+//
+// The curve gain is the odd one out: it is built only for a note that came from a
+// clip carrying a volume curve, so a pattern, a step grid and a song of plain
+// clips all run the original two-node chain. Where it exists it multiplies with
+// the velocity gain rather than replacing it, which is what keeps a note's own
+// velocity and its clip's automation two separate things that happen to meet.
 //
 // The channel's gain and panner outlive individual voices on purpose: a
 // channel's volume, pan, mute and solo must be audible *immediately*, including
@@ -25,14 +31,16 @@
 // octave up — it is the same note played twice as fast, so it also ends twice as
 // early, and a note's length would then depend on its pitch. Every voice here
 // therefore plays at rate 1 and sounds whatever `pitchShiftedBuffer` handed it:
-// a copy of the sample re-pitched ahead of time, of its original length. The
-// note's own `lengthSec` is then the only thing that decides how long it lasts.
+// a copy of the sample re-pitched ahead of time, of its original length. How long
+// it is heard for is then the note's own business and nothing else: the length it
+// was drawn at, plus the tail it carries — see `soundingSec`.
 //
 // No React and no store access here: this is plain Web Audio.
 
 import { SimpleFilter, SoundTouch } from 'soundtouchjs'
 
-import type { Note } from '../types/note'
+import { curveValueAt, type CurvePoint } from '../types/curve'
+import { soundingSec, type Note } from '../types/note'
 import { voiceForPitch, type SampleZone } from '../types/sample'
 
 let audioContext: AudioContext | null = null
@@ -97,6 +105,15 @@ type Voice = {
 export type ChannelStrip = {
   gain: GainNode
   panner: StereoPannerNode
+  /**
+   * What the channel is putting out right now, for a meter to read.
+   *
+   * Last in the chain on purpose: after the fader and the panner, so a bar fed
+   * from it shows what this channel contributes to the mix rather than what its
+   * notes asked for. A voice reserved ahead of the clock produces silence until
+   * its moment comes, and this reads the silence, which is the honest answer.
+   */
+  analyser: AnalyserNode
   voices: Set<Voice>
   /** Called on the silent <-> sounding edges, so the UI can light an indicator. */
   onActiveChange: (active: boolean) => void
@@ -120,6 +137,40 @@ let masterGain: GainNode | null = null
  */
 const RAMP_SEC = 0.01
 
+/**
+ * Fade applied to the front of every note, in seconds.
+ *
+ * A recording does not have to begin at zero — a chopped one-shot usually does
+ * not — and a source that starts on a non-zero frame steps the output from
+ * silence to that value within one frame, which is heard as a click. Rising from
+ * silence instead costs a few milliseconds and is far too short to be heard as
+ * an attack, so nothing about how the sample sounds is lost.
+ */
+export const VOICE_FADE_IN_SEC = 0.005
+
+/**
+ * Fade applied where a note stops a sample short, in seconds.
+ *
+ * A note shorter than the recording it plays is cut mid-signal by the source's
+ * own `stop`, and the output steps from wherever the waveform had got to, back
+ * to zero — the truncation click, and at its worst on a natural decay, which is
+ * still moving when it is cut. Long enough to ramp that step away, short enough
+ * that the note still ends where it was asked to end.
+ *
+ * Only applied where there is something to release; see `scheduleNoteSequence`.
+ */
+export const VOICE_FADE_OUT_SEC = 0.005
+
+/**
+ * How much of the output a meter reads at once, in samples.
+ *
+ * About forty milliseconds, which is longer than a frame: a meter that read
+ * exactly one frame's worth would be free to step over a short transient
+ * entirely and so under-report the one thing it exists to show. Longer than this
+ * and the bar would be describing a moment that has already gone by.
+ */
+const METER_WINDOW_FRAMES = 2048
+
 /** Build and connect a channel strip. Gain starts silent until the mix is applied. */
 export function createStrip(
   channelId: string,
@@ -129,12 +180,15 @@ export function createStrip(
 
   const gain = context.createGain()
   const panner = context.createStereoPanner()
+  const analyser = context.createAnalyser()
+  analyser.fftSize = METER_WINDOW_FRAMES
   gain.gain.value = 0
   panner.pan.value = 0
   gain.connect(panner)
-  panner.connect(getMasterGain())
+  panner.connect(analyser)
+  analyser.connect(getMasterGain())
 
-  const strip: ChannelStrip = { gain, panner, voices: new Set(), onActiveChange }
+  const strip: ChannelStrip = { gain, panner, analyser, voices: new Set(), onActiveChange }
   strips.set(channelId, strip)
   return strip
 }
@@ -155,6 +209,45 @@ export function setStripPan(strip: ChannelStrip, value: number): void {
   const now = getAudioContext().currentTime
   strip.panner.pan.cancelScheduledValues(now)
   strip.panner.pan.setTargetAtTime(value, now, RAMP_SEC)
+}
+
+/**
+ * One scratch buffer per strip, reused for every read.
+ *
+ * A meter asks for this sixty times a second per channel, and the answer it gets
+ * is one number: allocating an array to throw away on each of those would be a
+ * per-frame allocation for the whole life of a loop.
+ */
+const peakScratch = new WeakMap<ChannelStrip, Float32Array<ArrayBuffer>>()
+
+/**
+ * How loud a channel is right now, as the loudest sample in the last window.
+ *
+ * Peak rather than an average, because the peaks are what a meter is read for —
+ * where a level is going to clip, and where a drum's attack actually landed. It
+ * is a displacement, so it is never negative and can pass 1 on a channel that is
+ * summing past full scale; a caller drawing it is the one that decides what to
+ * do about that.
+ *
+ * The value already accounts for the channel's own volume, pan, mute and solo,
+ * because it is read off the end of the strip. Muted, this returns zero — the
+ * gain is what muted it.
+ */
+export function readStripPeak(strip: ChannelStrip): number {
+  let data = peakScratch.get(strip)
+  if (data === undefined) {
+    data = new Float32Array(strip.analyser.fftSize)
+    peakScratch.set(strip, data)
+  }
+
+  strip.analyser.getFloatTimeDomainData(data)
+
+  let peak = 0
+  for (let index = 0; index < data.length; index += 1) {
+    const value = Math.abs(data[index])
+    if (value > peak) peak = value
+  }
+  return peak
 }
 
 /** The master output every channel ends at. Built on first use. */
@@ -456,6 +549,59 @@ export function playNoteSequence(
 }
 
 /**
+ * A note as the song timeline hands it over: the note, plus the volume curve of
+ * the clip it came from.
+ *
+ * The song flattens its clips into notes before it gets here, and a clip may
+ * carry a curve — so the curve has to travel with the notes it shapes, because
+ * by the time the scheduler sees a note, which clip it came from is gone. Not
+ * that it would help: two clips of one pattern on the same channel are two sets
+ * of the same notes, and only the curve each note is carrying tells them apart.
+ *
+ * Both fields are optional, so a plain `Note` — the step loop's, the piano
+ * roll's — is still one of these. A note without a curve schedules exactly what
+ * it always did, down to the node count.
+ */
+export type SongNote = Note & {
+  /** The clip's curve, in seconds from the clip's start. Sorted; see `normalizeCurve`. */
+  curve?: CurvePoint[]
+  /** Where inside that clip this note starts, in seconds. */
+  curveOffsetSec?: number
+}
+
+/**
+ * Write a curve into a gain parameter, as the piece of it that falls over one note.
+ *
+ * The curve is written against the clip, and every note of that clip only owns
+ * its own stretch of it — so this cuts the curve down to the note's span and
+ * shifts its times onto the audio clock.
+ *
+ * The note opens on the value the curve has *at its start*, interpolated, not on
+ * the value of the next node: a note that begins in the middle of a rise starts
+ * part way up it, which is the whole point of automating a clip rather than
+ * each note.
+ *
+ * `points` must be sorted by time — `normalizeCurve` is what guarantees it, and
+ * the ramps below are written in that order.
+ */
+export function scheduleGainCurve(
+  param: AudioParam,
+  points: CurvePoint[],
+  offsetSec: number,
+  atSec: number,
+  lengthSec: number
+): void {
+  const endSec = offsetSec + lengthSec
+  param.setValueAtTime(curveValueAt(points, offsetSec), atSec)
+
+  for (const point of points) {
+    if (point.time <= offsetSec) continue
+    if (point.time >= endSec) break
+    param.linearRampToValueAtTime(point.value, atSec + (point.time - offsetSec))
+  }
+}
+
+/**
  * Schedule a whole note sequence on one strip, *without* cutting what the strip
  * already has.
  *
@@ -466,15 +612,32 @@ export function playNoteSequence(
  * caller that wants one voice at a time has to ask for it by handing over notes
  * that do not overlap, the way the step sequencer does.
  *
- * Note length is therefore audible: a short note chops the sample, a long one
- * lets it ring. Pitch is a semitone offset, sounded by a re-pitched copy of the
- * recording the note lands on rather than by a playback rate, so it cannot affect
- * that length; velocity scales that voice's own gain.
+ * What is audible is therefore the note's *sounding* length — the length it was
+ * drawn at plus the tail it carries (`Note.extend`), which is what `soundingSec`
+ * adds up. A short note chops the sample, a long one lets it ring, and extending
+ * one is how a note that chops too soon is given the room to decay instead: the
+ * tail is the same note held open, not a second voice. Either way the chop is
+ * faded rather than abrupt, so a note being cut short does not arrive as a click.
+ * Pitch is a semitone offset, sounded by a re-pitched copy of the recording the
+ * note lands on rather than by a playback rate, so it cannot affect that length;
+ * velocity scales that voice's own gain, and the two fades are laid over that
+ * scale rather than folded into it.
+ *
+ * The release is only applied where there is a waveform to release. A note that
+ * outlasts its recording is not cutting anything — the sample reaches its own end
+ * and stops — so fading there would only be shaping a decay that is already over.
+ * The body of the note checks the two ends against each other and skips the
+ * release when there is nothing to skip. Extending a note is the ordinary way to
+ * reach that case: long enough, and the note is let go of rather than cut.
  *
  * `zones` is the whole instrument, not one buffer, because which recording a note
  * plays depends on the note: see `voiceForPitch`. A single-file sample is the
  * one-zone case, and every note of it shifts by its own pitch — exactly what a
  * single `buffer` used to do.
+ *
+ * A note that carries a clip's volume curve gets one more node in its chain and
+ * one more set of ramps on it — see `SongNote`. Everything else about it is
+ * unchanged, and a note without a curve is scheduled exactly as it always was.
  *
  * `startAtSec` is an absolute `AudioContext.currentTime` value, so the caller can
  * derive a playhead from the very same number. `onFinished` is optional because
@@ -484,7 +647,7 @@ export function playNoteSequence(
 export function scheduleNoteSequence(
   strip: ChannelStrip,
   zones: SampleZone[],
-  notes: Note[],
+  notes: SongNote[],
   startAtSec: number,
   onFinished?: () => void
 ): void {
@@ -496,6 +659,12 @@ export function scheduleNoteSequence(
     if (note.lengthSec <= 0) return
 
     const noteStart = startAtSec + note.startSec
+    // How long this note is heard for: what it was drawn as, plus its tail. The
+    // guard above still reads `lengthSec` alone — a tail is not a length, so a
+    // note drawn with no length is a mistake however far it is extended, while a
+    // note drawn short and extended to ring is the ordinary case this is for.
+    const soundSec = soundingSec(note)
+    const noteEnd = noteStart + soundSec
 
     // Which recording this note plays is the note's own business, not the
     // channel's: a multisampled instrument covers the keyboard in zones, and two
@@ -503,21 +672,75 @@ export function scheduleNoteSequence(
     const voice = voiceForPitch(zones, note.pitch)
 
     const source = context.createBufferSource()
-    source.buffer = pitchShiftedBuffer(voice.buffer, voice.shift)
+    const rendered = pitchShiftedBuffer(voice.buffer, voice.shift)
+    source.buffer = rendered
 
     // Velocity belongs to the note, so it needs a gain of its own: the strip's
     // gain is the channel's, and volume, mute and solo all write to that.
     const velocityGain = context.createGain()
-    velocityGain.gain.value = gainForVelocity(note.velocity)
+    const level = gainForVelocity(note.velocity)
+    const gain = velocityGain.gain
+
+    // Both fades are bounded by half of what is heard, so that a note shorter
+    // than the two of them together still opens and closes instead of having one
+    // run over the other — which would leave it silent, or ending on a step after
+    // all. Half of the *sounding* length, tail included, so that extending a
+    // clipped note lengthens it rather than lengthening one of its two fades.
+    const fadeInSec = Math.min(VOICE_FADE_IN_SEC, soundSec / 2)
+    const fadeOutSec = Math.min(VOICE_FADE_OUT_SEC, soundSec / 2)
+
+    // Whether this note is what ends the sound, or the sample is. Measured
+    // against the buffer the note actually plays — a re-pitched copy is the same
+    // length as its sample, but only by construction, and this is the copy that
+    // is about to be heard.
+    const cutsSample = noteEnd < noteStart + rendered.duration
+
+    gain.setValueAtTime(0, noteStart)
+    gain.linearRampToValueAtTime(level, noteStart + fadeInSec)
+    if (cutsSample) {
+      // Held flat up to the release, so the fade is the release and not a slope
+      // running from the attack — a quiet note would otherwise be nothing but
+      // fade on a long one.
+      gain.setValueAtTime(level, noteEnd - fadeOutSec)
+      gain.linearRampToValueAtTime(0, noteEnd)
+    }
+
+    // The clip's own volume curve, if this note came from a clip that has one.
+    // A node of its own rather than another set of ramps on the one above: the
+    // fades there are written against the note's velocity and would have to be
+    // re-derived for every curve shape, while two gains in series simply
+    // multiply — which is also what a note's velocity and its clip's automation
+    // honestly are.
+    const curve = note.curve
+    const curveOffsetSec = note.curveOffsetSec
+    let automation: GainNode | null = null
+    if (curve !== undefined && curve.length > 0 && curveOffsetSec !== undefined) {
+      automation = context.createGain()
+      // Written over the note's own length rather than over what it sounds for: a
+      // curve belongs to the clip, and where the clip ends is where its shape
+      // ends. A tail runs on past that, holding whatever value the curve was left
+      // at — and the fade below still closes it, so a tail is never a note that
+      // forgot to stop.
+      scheduleGainCurve(automation.gain, curve, curveOffsetSec, noteStart, note.lengthSec)
+    }
+
     source.connect(velocityGain)
-    velocityGain.connect(strip.gain)
+    if (automation === null) {
+      velocityGain.connect(strip.gain)
+    } else {
+      velocityGain.connect(automation)
+      automation.connect(strip.gain)
+    }
 
     // Only the last note can report the end: notes are ordered, so the last one
     // to *start* is also the last to fall silent.
-    trackVoice(strip, source, index === ordered.length - 1 ? onFinished : undefined, [velocityGain])
+    trackVoice(strip, source, index === ordered.length - 1 ? onFinished : undefined, [
+      velocityGain,
+      ...(automation === null ? [] : [automation])
+    ])
 
     source.start(noteStart)
-    source.stop(noteStart + note.lengthSec)
+    source.stop(noteEnd)
   })
 }
 
@@ -526,7 +749,8 @@ export type ScheduledChannel = {
   strip: ChannelStrip
   /** The channel's whole instrument — see `scheduleNoteSequence`. */
   zones: SampleZone[]
-  notes: Note[]
+  /** `SongNote`s, because they come off the song timeline — see that type. */
+  notes: SongNote[]
 }
 
 /**

@@ -18,6 +18,21 @@ export type Note = {
   startSec: number
   /** How long the sample is held, in seconds. */
   lengthSec: number
+  /**
+   * How much longer than that it is allowed to sound, in seconds. 0 by default.
+   *
+   * The release, in other words: a note that is only an eighth long cuts its
+   * sample off while it is still decaying, and the cut is heard as a click-shaped
+   * hole rather than as an ending. Extending the note lets the recording finish
+   * on its own, which is usually what a short note in a part wants.
+   *
+   * It is *not* a length. The note stays the size it was drawn on the grid, and
+   * everything that positions or clamps one — where it sits, how far a resize can
+   * drag it, how much room the pattern has — goes on reading `lengthSec` alone.
+   * Only the scheduler reads this, and it reads it as the note's own tail: see
+   * `soundingSec`.
+   */
+  extend: number
   /** Semitone offset from the sample's own pitch. 0 plays it as recorded. */
   pitch: number
   /** How hard the note is played, 0..127. Scales that voice's gain. */
@@ -35,6 +50,18 @@ export const MAX_VELOCITY = 127
 
 /** Velocity a freshly drawn note gets: comfortably above the middle. */
 export const DEFAULT_VELOCITY = 100
+
+/**
+ * How far a note can be extended: five seconds, in the unit the project stores.
+ *
+ * A bound rather than a musical figure. What the tail actually runs to is the
+ * end of the recording, and nothing past it makes a difference — so the cap only
+ * has to be longer than any sample whose decay someone would wait out, which is
+ * what five seconds is. It is stated in seconds because seconds are what a note
+ * holds; the field in the piano roll is in milliseconds, like the figure a person
+ * types.
+ */
+export const MAX_EXTEND_SEC = 5
 
 /** The tempo an empty project starts at. */
 export const DEFAULT_BPM = 120
@@ -216,6 +243,18 @@ export function defaultNoteSec(bpm: number, division: number = STEPS_PER_BEAT): 
  */
 export function minNoteSec(bpm: number, division: number = STEPS_PER_BEAT): number {
   return secondsPerGrid(bpm, division)
+}
+
+/**
+ * How long a note actually sounds: what it was drawn as, plus its tail.
+ *
+ * The one place the two are added up, because everything that hears a note has to
+ * agree about when it ends — the live scheduler, the exporter, and the fade at
+ * the end of it. A tail is a property of the note and not of the pattern, so this
+ * is a plain sum with nothing tempo-shaped in it: the two are already seconds.
+ */
+export function soundingSec(note: Note): number {
+  return note.lengthSec + note.extend
 }
 
 // Piano keyboard.

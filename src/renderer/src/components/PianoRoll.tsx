@@ -16,6 +16,7 @@ import {
   BEATS_PER_BAR,
   KEY_HEIGHT_PX,
   LENGTH_BAR_OPTIONS,
+  MAX_EXTEND_SEC,
   MAX_KEY_PX,
   MAX_STEP_PX,
   MAX_VELOCITY,
@@ -124,10 +125,24 @@ const RULER_HEIGHT_PX = 18
  * Deep enough that 127 levels are worth dragging through — at this height one
  * pixel of travel is about two velocity steps, so the full range is reachable
  * without the lane taking a third of the panel.
+ *
+ * Also the height of the gutter to its left, which holds two labelled figures
+ * now: the tail's field sits under the velocity, and the lane grew by a line and
+ * a half to hold it without the pair above being crowded against it.
  */
-const VELOCITY_LANE_PX = 64
+const VELOCITY_LANE_PX = 78
 /** How much Ctrl with an arrow key moves a note's velocity. */
 const VELOCITY_STEP = 10
+/** How much Shift with an arrow key moves a note's tail by, in milliseconds. */
+const EXTEND_STEP_MS = 10
+/**
+ * The tail's ceiling in the unit the field is typed in.
+ *
+ * The store holds seconds; milliseconds is the unit the field and the shortcut
+ * are read and written in, because a tail is a short thing — single digits of
+ * milliseconds up to a few seconds — and "0.25" reads worse than "250".
+ */
+const MAX_EXTEND_MS = MAX_EXTEND_SEC * 1000
 
 /**
  * How big a note has to be before its name is drawn on it.
@@ -158,6 +173,47 @@ const ZOOM_STEP = 1.25
 const NO_IDS: readonly string[] = []
 
 /**
+ * How much room a rung of the grid needs before it is drawn at all.
+ *
+ * Measured between a rung's own lines, which are `barPx / cells` apart — so this
+ * is a length in pixels rather than a zoom level, and the same figure at every
+ * zoom. Read the other way round, as pixels per bar, a rung's threshold is a
+ * constant: its cells times this. There is no other table of thresholds, which is
+ * what keeps the ladder from drifting apart from the zoom it is drawn against.
+ *
+ * Fifteen is a taste rather than a derivation, but it is a taste with an edge on
+ * it. The roll's smallest zoom is a 1/16 step at `MIN_STEP_PX`, which is a 48px
+ * bar and a 12px beat, so this has to clear twelve or the beat line would be
+ * there at the floor — a rung the zoom has not paid for, and the bar would never
+ * have a zoom to itself. Cleared, the rungs step by doubling, which is what makes
+ * them a ladder: a beat from 60px a bar, a 1/8 from 120, a 1/16 from 240, a 1/32
+ * from 480, a 1/64 from 960. The finest of them is still reachable — the ceiling
+ * of the zoom range is a 4096px bar.
+ */
+const RUNG_MIN_GAP_PX = 15
+
+/** Cells a bar holds at each rung under the beat: a 1/8, a 1/16, a 1/32, a 1/64. */
+const CELLS_8TH = BEATS_PER_BAR * 2
+const CELLS_16TH = BEATS_PER_BAR * 4
+const CELLS_32ND = BEATS_PER_BAR * 8
+const CELLS_64TH = BEATS_PER_BAR * 16
+
+/**
+ * The width a rung's line is drawn at: nothing, once the zoom has left it no room.
+ *
+ * Zero is how a rung says it is not there. The gradient keeps its stops, but a
+ * zero-length run of colour is no colour, so the layer paints nothing at all and
+ * the rung is genuinely absent — as opposed to walked back onto the period of a
+ * rung above and left for that one to cover, which only hides it while the two
+ * agree down to the pixel. A bar width is rarely a whole number, and two lines
+ * half a pixel apart read as a doubled line rather than as no line. See
+ * `drawnCells`, which is what the snap grid alone still uses.
+ */
+function rungLineWidth(cellsPerBar: number, barPx: number): string {
+  return barPx >= cellsPerBar * RUNG_MIN_GAP_PX ? '1px' : '0px'
+}
+
+/**
  * The Piano Roll for one channel: a time-by-pitch grid holding that channel's
  * note sequence.
  *
@@ -175,6 +231,8 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
   const resizeNotes = useDawStore((state) => state.resizeNotes)
   const removeNotes = useDawStore((state) => state.removeNotes)
   const adjustVelocity = useDawStore((state) => state.adjustVelocity)
+  const setNoteExtend = useDawStore((state) => state.setNoteExtend)
+  const adjustExtend = useDawStore((state) => state.adjustExtend)
   const previewPitch = useDawStore((state) => state.previewPitch)
   const playPianoRoll = useDawStore((state) => state.playPianoRoll)
   const stopSequence = useDawStore((state) => state.stopSequence)
@@ -297,6 +355,29 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
   /** Where the last paste landed, so a repeated paste can move on from it. */
   const lastPasteRef = useRef<number | null>(null)
 
+  /**
+   * The 延长 field's text while it is being typed in, and what it is a draft of.
+   *
+   * Text rather than a number and held rather than committed per keystroke: the
+   * "1" on the way to "150" is not a tail of one millisecond, and clamping what
+   * the user is still writing would fight them. Null is "nothing is being typed",
+   * which is not the same as an empty box: an emptied box is the user in the
+   * middle of saying nothing, and it has to stay empty under them.
+   *
+   * It carries the notes it was written against, and is only read back while
+   * those are still the selection — the same trick the selection itself uses, and
+   * for the same reason. A half-typed figure about one note has no business
+   * standing in a field that has since been pointed at another, and reading the
+   * signature drops it during the render that notices rather than one effect
+   * later.
+   */
+  const [extendDraft, setExtendDraft] = useState<{ ids: string; text: string | null }>({
+    ids: '',
+    text: null
+  })
+  const extendIds = selectedIds.join(',')
+  const extendText = extendDraft.ids === extendIds ? extendDraft.text : null
+
   // The transport is global, so this panel only follows it while it is this
   // channel's own playback — never a whole song.
   const playback = useDawStore((state) => selectChannelPlayback(state, channel.id))
@@ -344,8 +425,13 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
    * grid's lines would land on top of one another and the finest layer would
    * paint the sheet a flat colour; what is drawn gives way to that, while what a
    * note lands on keeps to `gridDivision`. See `drawnCells`.
+   *
+   * Held as the count of cells the walk-back lands on as well as the width they
+   * come to, because the layer it draws is gated the way a rung is: a snap grid
+   * with no room on the sheet is not drawn either.
    */
-  const cellPx = barPx / drawnCells(gridDivision * BEATS_PER_BAR, barPx)
+  const cellCells = drawnCells(gridDivision * BEATS_PER_BAR, barPx)
+  const cellPx = barPx / cellCells
 
   /** Whether a drag lands on the grid: off while Alt is held, or the switch is off. */
   const snapping = useCallback((altKey: boolean): boolean => snapEnabled && !altKey, [snapEnabled])
@@ -687,6 +773,21 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
         return
       }
 
+      // The note's tail, in steps of ten milliseconds, on the left/right pair —
+      // the two arrows velocity does not use. Shift rather than Ctrl because this
+      // is a length, and the horizontal arrows are where a length lives.
+      if (event.shiftKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+        if (selectedIds.length === 0) return
+        event.preventDefault()
+        const step = event.key === 'ArrowLeft' ? -EXTEND_STEP_MS : EXTEND_STEP_MS
+        adjustExtend(
+          channel.id,
+          notes.filter((note) => selected.has(note.id)),
+          step / 1000
+        )
+        return
+      }
+
       if (event.key === 'Delete' || event.key === 'Backspace') {
         if (selectedIds.length === 0) return
         event.preventDefault()
@@ -713,6 +814,7 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
     gridDivision,
     addNotes,
     adjustVelocity,
+    adjustExtend,
     removeNotes
   ])
 
@@ -922,17 +1024,37 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
 
   // Grid line spacing in pixels: the notes are positioned with these same
   // numbers, so the lines and the notes cannot disagree about where a step is.
+  //
+  // Each rung arrives as two numbers taken off the one count of cells: how far
+  // apart its lines are, and how wide they are drawn — nothing at all while the
+  // zoom has left the rung no room. The stylesheet keeps the colours and the
+  // layering; this is only the geometry.
   const canvasStyle = {
     '--pr-keys-w': `${KEYS_WIDTH_PX}px`,
     '--pr-ruler-h': `${RULER_HEIGHT_PX}px`,
     '--pr-grid-w': `${gridWidthPx}px`,
     '--pr-grid-h': `${gridHeightPx}px`,
-    '--pr-cell-w': `${cellPx}px`,
+    // The bar is the one line no zoom takes away, and the only one drawn wider
+    // than a pixel — everything below it steps down by grey alone.
+    '--pr-bar-w': `${barPx}px`,
     // A half bar rather than half the beats: it is the middle of the bar that
     // wants marking, and with four beats to the bar the two are the same line.
+    // Drawn at every zoom, like the bar it halves.
     '--pr-half-w': `${barPx / 2}px`,
     '--pr-beat-w': `${barPx / BEATS_PER_BAR}px`,
-    '--pr-bar-w': `${barPx}px`,
+    '--pr-beat-lw': rungLineWidth(BEATS_PER_BAR, barPx),
+    // The rungs under the beat: an eighth of a bar down to a sixty-fourth, which
+    // is also where the grid stops — the roll offers nothing finer than a 1/64.
+    '--pr-8th-w': `${barPx / CELLS_8TH}px`,
+    '--pr-8th-lw': rungLineWidth(CELLS_8TH, barPx),
+    '--pr-16th-w': `${barPx / CELLS_16TH}px`,
+    '--pr-16th-lw': rungLineWidth(CELLS_16TH, barPx),
+    '--pr-32nd-w': `${barPx / CELLS_32ND}px`,
+    '--pr-32nd-lw': rungLineWidth(CELLS_32ND, barPx),
+    '--pr-64th-w': `${barPx / CELLS_64TH}px`,
+    '--pr-64th-lw': rungLineWidth(CELLS_64TH, barPx),
+    '--pr-cell-w': `${cellPx}px`,
+    '--pr-cell-lw': rungLineWidth(cellCells, barPx),
     '--pr-vel-h': `${VELOCITY_LANE_PX}px`
   } as React.CSSProperties
 
@@ -952,6 +1074,51 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
       : selectedVelocities.length === 1
         ? String(selectedVelocities[0])
         : `${Math.min(...selectedVelocities)}–${Math.max(...selectedVelocities)}`
+
+  /**
+   * What the 延长 field says, in whole milliseconds.
+   *
+   * A range is not offered the way the velocity readout offers one: velocity is
+   * read, and a tail is typed. "0–500" is not something anyone can type into
+   * without first deciding which end of it the typing was meant for, so a
+   * selection that disagrees about its tail shows nothing at all — the field goes
+   * blank, and a figure typed into it then brings every note to that figure.
+   *
+   * `null` is that blank, and also what an empty selection reads as: the field is
+   * disabled there anyway, and the placeholder dash is what it shows.
+   */
+  const selectedExtends = notes
+    .filter((note) => selected.has(note.id))
+    .map((note) => Math.round(note.extend * 1000))
+  const sharedExtendMs =
+    selectedExtends.length > 0 && selectedExtends.every((ms) => ms === selectedExtends[0])
+      ? selectedExtends[0]
+      : null
+
+  /**
+   * Put what is in the field onto the selected notes.
+   *
+   * Nothing but a number is an instruction. Empty or unreadable text is the user
+   * having cleared the field or walked away mid-figure, and the honest answer to
+   * that is to do nothing and let the field fall back to showing what the notes
+   * hold — which is also why the draft is dropped first, whether or not anything
+   * was committed.
+   *
+   * The figure is clamped here rather than refused, so typing 99999 lands on the
+   * ceiling and is then seen to be sitting there. The store clamps and rounds to
+   * the millisecond as well; this is the UI's copy of the same two rules, which is
+   * what makes the field's own reading right without a round trip.
+   */
+  const commitExtend = (): void => {
+    const text = (extendText ?? '').trim()
+    setExtendDraft({ ids: extendIds, text: null })
+    if (text === '') return
+    const ms = Number(text)
+    if (!Number.isFinite(ms)) return
+    const picked = notes.filter((note) => selected.has(note.id))
+    if (picked.length === 0) return
+    setNoteExtend(channel.id, picked, clamp(ms, 0, MAX_EXTEND_MS) / 1000)
+  }
 
   // Bar and beat rather than seconds: it is what the ruler above the notes says,
   // so the readout and the grid agree about where the line is.
@@ -1099,7 +1266,7 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
         <span className="pr__hint">
           空白拖动＝画音符（拖出长度）· 「框选」工具或 Shift+拖动＝框选 · 右边缘拖动＝改长度 ·
           标尺＝播放起点 · 拖动音符＝移动 · 右键＝删除 · 底部力度条拖动＝改力度 · Ctrl+↑↓＝力度 ±10
-          · 空格＝播放 · Ctrl+Z＝撤销 · Ctrl+滚轮＝缩放 · Alt＝临时取消吸附
+          · Shift+←→＝延长 ±10ms · 空格＝播放 · Ctrl+Z＝撤销 · Ctrl+滚轮＝缩放 · Alt＝临时取消吸附
         </span>
       </div>
 
@@ -1188,7 +1355,12 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
                       // note you can see, aim at and drag.
                       opacity: 0.25 + 0.75 * (note.velocity / MAX_VELOCITY)
                     }}
-                    title={`${noteName(note.pitch)} · 第 ${Math.floor(note.startSec / barSec) + 1} 小节 ${Math.floor((note.startSec % barSec) / beatSec) + 1} 拍 · 长 ${note.lengthSec.toFixed(3)}s · 力度 ${note.velocity}`}
+                    title={`${noteName(note.pitch)} · 第 ${Math.floor(note.startSec / barSec) + 1} 小节 ${Math.floor((note.startSec % barSec) / beatSec) + 1} 拍 · 长 ${note.lengthSec.toFixed(3)}s${
+                      // The tail, when there is one, and only then: a note that
+                      // is not extended has nothing extra to say about itself,
+                      // and the drawn length above is the whole story.
+                      note.extend > 0 ? ` · 延长 ${Math.round(note.extend * 1000)}ms` : ''
+                    } · 力度 ${note.velocity}`}
                     onPointerDown={(event) => handleNotePointerDown(event, note)}
                     onContextMenu={(event) => {
                       event.preventDefault()
@@ -1274,9 +1446,46 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
                 a stem is always at the x of the note it belongs to however the
                 grid is scrolled. Pinned to the bottom of the viewport: it is a
                 scale to drag against, and a scale that scrolls away is no use. */}
-            <div className="pr__vel-label" title="选中音符的力度">
-              <span className="pr__vel-title">力度</span>
+            <div className="pr__vel-label">
+              <span className="pr__vel-title" title="选中音符的力度">
+                力度
+              </span>
               <span className="pr__vel-value">{velocityReadout}</span>
+
+              {/* The tail, in milliseconds, for the selected notes. Sits in the
+                  lane's gutter rather than in the header because it is part of
+                  what a note is, like its velocity — and because a gutter is
+                  where a readout can be typed into without the grid moving. */}
+              <span className="pr__vel-title" title="选中音符的延长量，毫秒">
+                延长
+              </span>
+              <input
+                className="pr__extend"
+                type="number"
+                min={0}
+                max={MAX_EXTEND_MS}
+                step={EXTEND_STEP_MS}
+                inputMode="numeric"
+                aria-label="选中音符的延长量，毫秒"
+                placeholder="—"
+                value={extendText ?? (sharedExtendMs === null ? '' : String(sharedExtendMs))}
+                disabled={selectedIds.length === 0}
+                title="选中音符的延长量，毫秒 · Shift+←→＝每次 ±10"
+                onChange={(event) => setExtendDraft({ ids: extendIds, text: event.target.value })}
+                onFocus={(event) => event.currentTarget.select()}
+                onBlur={commitExtend}
+                onKeyDown={(event) => {
+                  // Enter puts it on and gets out of the way; Escape throws the
+                  // typing away and leaves the notes as they were.
+                  if (event.key === 'Enter') {
+                    commitExtend()
+                    event.currentTarget.blur()
+                  } else if (event.key === 'Escape') {
+                    setExtendDraft({ ids: extendIds, text: null })
+                    event.currentTarget.blur()
+                  }
+                }}
+              />
             </div>
 
             <div

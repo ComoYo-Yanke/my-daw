@@ -3,6 +3,7 @@ import ContextMenu, { type ContextMenuItem } from './ContextMenu'
 import Knob from './Knob'
 import SamplePicker from './SamplePicker'
 import WaveformThumbnail from './WaveformThumbnail'
+import { useChannelLevel } from '../hooks/useChannelLevel'
 import { useStepCursor } from '../hooks/useStepCursor'
 import {
   DEFAULT_PAN,
@@ -105,6 +106,13 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
   const isSounding =
     playback?.mode === 'steps' ? currentStep !== null && steps[currentStep] === true : isPlaying
 
+  // The meter reads the strip rather than `isSounding`, and that is the
+  // difference between the two: a step loop's cursor says when a step was
+  // *asked* to fire, which is not the same as it being audible right now. The
+  // strip's own output is the thing being measured, so this is `isPlaying` — the
+  // flag the LED would use if the LED could wait for the sound.
+  const meterRef = useChannelLevel(channel.id, isPlaying)
+
   /**
    * The waveform is the channel's play button: a channel that has notes plays its
    * sequence, and an empty one auditions the sample so it still makes a sound.
@@ -192,6 +200,7 @@ function ChannelRow({ channel, sample, isPlaying, playback }: ChannelRowProps): 
             {notes.length > 0 ? ` · ${notes.length} 音符` : ''}
             {activeSteps > 0 ? ` · ${activeSteps} 步进` : ''}
           </span>
+          <span className="channel__meter" ref={meterRef} aria-hidden="true" />
         </div>
 
         <button

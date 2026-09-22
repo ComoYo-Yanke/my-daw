@@ -18,12 +18,13 @@ import {
   toArrayBuffer,
   triggerStrip
 } from '../audio/engine'
-import type { ScheduledChannel } from '../audio/engine'
+import type { ScheduledChannel, SongNote } from '../audio/engine'
 import type { ExportVoice } from '../audio/export'
 import { isLibraryPath, loadLibrarySample } from '../audio/library'
 import { computePeaks } from '../audio/peaks'
 import { singleZone, voiceForPitch, type SampleZone } from '../types/sample'
 import { parseProjectFile, serializeProject, type ProjectFile } from '../types/project'
+import { curveFromNotes, NO_CURVE, normalizeCurve, type CurvePoint } from '../types/curve'
 import {
   clampLengthBars,
   clampNoteLength,
@@ -37,6 +38,7 @@ import {
   lengthBarsForEnd,
   LOWEST_PITCH,
   MAX_BPM,
+  MAX_EXTEND_SEC,
   MAX_VELOCITY,
   MIN_BPM,
   MIN_VELOCITY,
@@ -45,6 +47,7 @@ import {
   secondsPerGrid,
   sequenceSec,
   snapSec,
+  soundingSec,
   type GridDivision,
   type Note
 } from '../types/note'
@@ -208,6 +211,16 @@ export type PlaylistClip = {
   startBar: number
   /** How long it runs, in whole bars. At least one. */
   lengthBars: number
+  /**
+   * The clip's own volume over time, in seconds from the clip's start. Empty if
+   * nobody has drawn one — see `clipCurve`.
+   *
+   * A clip's rather than a pattern's: the same pattern placed twice can be faded
+   * down once and left alone the other time, and copy-pasting a clip is how a
+   * fade gets reused. It is also why it lives here and not in `Pattern` next to
+   * the notes, which are shared by every clip that places them.
+   */
+  volumeCurve: CurvePoint[]
 }
 
 /**
@@ -610,6 +623,33 @@ export type DawState = {
    * without being deleted.
    */
   adjustVelocity: (channelId: string, origins: Note[], deltaVelocity: number) => void
+  /**
+   * Set how much longer than the length it was drawn at a note sounds.
+   *
+   * Absolute, and the same figure for every note handed in: this is what the
+   * piano roll's 延长 field writes, and one number typed into one field means
+   * "make them this". A selection whose notes held different tails therefore
+   * lands on one value, which is the only reading of a single number that is
+   * honest about all of them.
+   *
+   * Seconds, like every other time in the store. The field is in milliseconds
+   * because that is the figure a person types, and the conversion happens at that
+   * boundary and nowhere else.
+   */
+  setNoteExtend: (channelId: string, notes: Note[], extendSec: number) => void
+  /**
+   * Change how much longer a set of notes sounds, by a delta.
+   *
+   * Shaped like `adjustVelocity` and saturating the same way: each note stops at
+   * the ceiling on its own rather than the group stopping together, so one note of
+   * a selection already extended as far as it can go cannot freeze the rest. It is
+   * what Shift+←/→ writes, where every press is one step and the notes that have
+   * room take it.
+   *
+   * Zero is the floor, because a tail only ever adds to a note: shortening what
+   * was drawn is what the note's own right edge is for.
+   */
+  adjustExtend: (channelId: string, origins: Note[], deltaSec: number) => void
   removeNote: (channelId: string, noteId: string) => void
   removeNotes: (channelId: string, noteIds: string[]) => void
   /** Sound one pitch through a channel, for auditioning a piano key. */
@@ -689,6 +729,21 @@ export type DawState = {
    * were made, a second time takes them away. That is the order it happened in.
    */
   duplicateClips: (ids: string[]) => string[]
+
+  /**
+   * Replace one clip's whole volume curve.
+   *
+   * The whole curve rather than "add a point", "move a point" and "delete a
+   * point": the panel drawing the curve is already holding the whole of it, and
+   * the result of one gesture is its complete opinion of what the curve should
+   * now be. Three narrow entry points would only mean writing "stand on the
+   * derived curve first, then edit it" out three times.
+   *
+   * `key` names the gesture. Every move of one drag reports the same key, so the
+   * drag lands on the undo stack once — the same rule every other drag here
+   * follows.
+   */
+  setClipCurve: (clipId: string, points: CurvePoint[], key?: string) => void
 
   /** Add an empty lane at the bottom of the timeline. */
   addTrack: () => void
@@ -932,6 +987,23 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 /**
+ * A note's tail as the project stores it: whole milliseconds, inside the ceiling.
+ *
+ * Milliseconds because that is the resolution the parameter is asked for in — the
+ * field is in milliseconds and the arrow keys step in them — and because a float
+ * that has been added to a hundred times over is not a number anyone wants written
+ * into a project file. Rounded here rather than at the field so that every way of
+ * setting a tail lands on the same grid of values.
+ *
+ * Zero is the floor: a tail is something a note has, not something it lacks, and
+ * a note shorter than it was drawn is a shorter note — which is what its own
+ * right edge is for.
+ */
+function clampExtend(extendSec: number): number {
+  return clamp(Math.round(extendSec * 1000) / 1000, 0, MAX_EXTEND_SEC)
+}
+
+/**
  * How far ahead of the audio clock steps are reserved, in seconds.
  *
  * This is the whole latency of the step sequencer: it is how long it takes a
@@ -1080,10 +1152,49 @@ export function audibleGain(channel: Channel, anySoloed: boolean): number {
   return channel.volume
 }
 
+/**
+ * The curve a clip actually plays and draws with.
+ *
+ * Its own if it has one, and otherwise one read off the pattern's note
+ * velocities. Deriving rather than materialising is what makes turning the curve
+ * display on a pure view action: nothing is written to the project, so nothing
+ * is marked unsaved and nothing lands on the undo stack — and editing a
+ * velocity changes the default curve, which is what "the default comes from the
+ * velocities" has to mean to be worth anything.
+ *
+ * Both being empty is "no automation": the clip plays at the volume it always
+ * did. That happens when the pattern has no notes to read one off.
+ *
+ * `barSec` is a bar at the tempo these notes are pinned to — the curve is
+ * written in the same seconds they are (see `curveFromNotes`).
+ */
+export function clipCurve(
+  stored: CurvePoint[],
+  pattern: Pattern | undefined,
+  barSec: number,
+  lengthBars: number
+): CurvePoint[] {
+  if (stored.length > 0) return stored
+  if (pattern === undefined) return NO_CURVE
+  return curveFromNotes(
+    Object.values(pattern.notesByChannel).flat(),
+    pattern.lengthBars,
+    lengthBars,
+    barSec
+  )
+}
+
 /** A song flattened onto one timeline: what sounds, and how far it runs. */
 export type SongTimeline = {
-  /** One entry per channel that has something to play, keyed by channel id. */
-  notesByChannel: Map<string, Note[]>
+  /**
+   * One entry per channel that has something to play, keyed by channel id.
+   *
+   * `SongNote`s rather than plain notes: each one carries the volume curve of
+   * the clip it came from, which is the only thing left that says which clip
+   * that was — and two clips of one pattern on one channel are otherwise
+   * indistinguishable sets of the same notes.
+   */
+  notesByChannel: Map<string, SongNote[]>
   /** Where the song ends: the furthest edge of any clip that can be heard. */
   bars: number
 }
@@ -1108,6 +1219,13 @@ export type SongTimeline = {
  * written at, and are scaled by the same ratio instead. Render at twice the
  * tempo and every second value halves, which is what keeps the notes where they
  * were drawn rather than sliding towards the front of the clip.
+ *
+ * Each note leaves with the volume curve of the clip it came from attached, plus
+ * where inside that clip it sits. The curve is a shape rather than a level, so it
+ * cannot be resolved here and applied to a strip; it has to reach the scheduler,
+ * which is the only thing that can write it as gain over time. Note velocities
+ * ride along the same way they always did — a note's own velocity and its clip's
+ * automation are two separate things that multiply.
  */
 export function selectSongTimeline(state: DawState, bpm: number = state.bpm): SongTimeline {
   const { playlistClips, playlistTracks, patterns } = state
@@ -1123,7 +1241,7 @@ export function selectSongTimeline(state: DawState, bpm: number = state.bpm): So
       .map((track) => track.id)
   )
 
-  const notesByChannel = new Map<string, Note[]>()
+  const notesByChannel = new Map<string, SongNote[]>()
   let bars = 0
 
   for (const clip of playlistClips) {
@@ -1136,6 +1254,16 @@ export function selectSongTimeline(state: DawState, bpm: number = state.bpm): So
     bars = Math.max(bars, clip.startBar + clip.lengthBars)
     const clipEndBar = clip.startBar + clip.lengthBars
 
+    // The clip's volume curve, told to every note it is about to contribute.
+    // Measured in the same seconds the notes are — seconds written at the
+    // project's own tempo — so it scales by the same ratio and stays over the
+    // same part of the clip however the song is being rendered.
+    const curve = clipCurve(clip.volumeCurve, pattern, patternBarSec, clip.lengthBars)
+    const timedCurve =
+      noteSecScale === 1
+        ? curve
+        : curve.map((point) => ({ ...point, time: point.time * noteSecScale }))
+
     const plays = Math.ceil(clip.lengthBars / pattern.lengthBars)
     for (let play = 0; play < plays; play += 1) {
       const playStartBar = clip.startBar + play * pattern.lengthBars
@@ -1144,6 +1272,9 @@ export function selectSongTimeline(state: DawState, bpm: number = state.bpm): So
       // In the pattern's own seconds, which is the unit the notes are in.
       const playSec = Math.min(pattern.lengthBars, clipEndBar - playStartBar) * patternBarSec
       const offsetSec = playStartBar * barSec
+      // Where this repeat starts inside the clip, in rendered seconds. A clip
+      // longer than its pattern is where one curve has to cover several passes.
+      const playInClipSec = (playStartBar - clip.startBar) * barSec
 
       for (const [channelId, notes] of Object.entries(pattern.notesByChannel)) {
         const timeline = notesByChannel.get(channelId) ?? []
@@ -1153,7 +1284,18 @@ export function selectSongTimeline(state: DawState, bpm: number = state.bpm): So
           timeline.push({
             ...note,
             startSec: note.startSec * noteSecScale + offsetSec,
-            lengthSec: Math.min(note.lengthSec, playSec - note.startSec) * noteSecScale
+            lengthSec: Math.min(note.lengthSec, playSec - note.startSec) * noteSecScale,
+            // Scaled with the rest of the note, so a song rendered at another
+            // tempo is the same song. Deliberately *not* cut down to the clip's
+            // edge the way the length above is: the length is what the clip has
+            // room for, while the tail is the note being let go of — which is
+            // exactly what a note at the edge of a clip needs in order to end
+            // rather than to be chopped.
+            extend: note.extend * noteSecScale,
+            curve: timedCurve,
+            // Where this note sits inside its clip — what the curve's times are
+            // measured from, and the only thing that survives the flattening.
+            curveOffsetSec: playInClipSec + note.startSec * noteSecScale
           })
         }
         notesByChannel.set(channelId, timeline)
@@ -1186,6 +1328,7 @@ export type ExportPlan = {
 export function selectExportPlan(state: DawState, bpm: number, tailSec: number): ExportPlan {
   const { notesByChannel, bars } = selectSongTimeline(state, bpm)
   const anySoloed = state.channels.some((channel) => channel.soloed)
+  const songSec = bars * secondsPerBar(bpm)
 
   const voices: ExportVoice[] = []
   for (const [channelId, notes] of notesByChannel) {
@@ -1201,7 +1344,20 @@ export function selectExportPlan(state: DawState, bpm: number, tailSec: number):
     })
   }
 
-  return { voices, durationSec: bars * secondsPerBar(bpm) + Math.max(0, tailSec) }
+  // Where the notes run to, which the arrangement's own edge does not always
+  // cover: a note's length is clamped to the clip it is in, but its tail is not,
+  // so an extended note at the end of the last clip outlasts every clip there is.
+  // A render stopped at the clip edge would cut off exactly the decay the tail was
+  // added to hear. With no tails past the end it is the same figure as before —
+  // `Math.max` of the two, so nothing about an ordinary song changes.
+  let notesEndSec = 0
+  for (const notes of notesByChannel.values()) {
+    for (const note of notes) {
+      notesEndSec = Math.max(notesEndSec, note.startSec + soundingSec(note))
+    }
+  }
+
+  return { voices, durationSec: Math.max(songSec, notesEndSec) + Math.max(0, tailSec) }
 }
 
 export const useDawStore = create<DawState>((set, get) => {
@@ -1525,7 +1681,10 @@ export const useDawStore = create<DawState>((set, get) => {
             pitch: 0,
             // A step grid has no velocity of its own, so a switched-on step is
             // as hard as a freshly drawn note.
-            velocity: DEFAULT_VELOCITY
+            velocity: DEFAULT_VELOCITY,
+            // And nothing to extend: a step is already as long as the gap to the
+            // next one, which is the whole shape of a step sequence.
+            extend: 0
           }
           scheduleNoteSequence(strip, sample.zones, [note], atSec)
         }
@@ -1906,6 +2065,11 @@ export const useDawStore = create<DawState>((set, get) => {
      * every note moves with the bar it sits in — otherwise the grid would slide
      * out from under the music the moment the tempo changed. Everything timed in
      * bars rather than seconds is derived and follows by itself.
+     *
+     * A clip's volume curve is stored in seconds for the same reason notes are —
+     * it is a shape over a clip, and a clip is a number of bars — so it scales
+     * with them. Without that, a fade written across four bars would cover a
+     * shrinking part of them every time the song was sped up.
      */
     setBpm: (bpm) => {
       const next = clamp(Math.round(bpm), MIN_BPM, MAX_BPM)
@@ -1928,7 +2092,21 @@ export const useDawStore = create<DawState>((set, get) => {
               lengthSec: note.lengthSec * ratio
             }))
           )
-        }))
+        })),
+        // A clip with no curve of its own keeps its identity: most clips have
+        // none, and rebuilding them all would re-render the whole timeline for
+        // a tempo change that cannot touch them.
+        playlistClips: state.playlistClips.map((clip) =>
+          clip.volumeCurve.length === 0
+            ? clip
+            : {
+                ...clip,
+                volumeCurve: clip.volumeCurve.map((point) => ({
+                  ...point,
+                  time: point.time * ratio
+                }))
+              }
+        )
       }))
     },
 
@@ -2717,7 +2895,11 @@ export const useDawStore = create<DawState>((set, get) => {
         startSec: start,
         lengthSec: clampNoteLength(noteSec, start, bpm, grown, gridDivision),
         pitch,
-        velocity: DEFAULT_VELOCITY
+        velocity: DEFAULT_VELOCITY,
+        // A drawn note is the length it was drawn: extending it is a decision
+        // about how it should sound, and nothing about a click on the grid says
+        // anything about that.
+        extend: 0
       }
       pushUndo(`add:${channelId}`)
       patchNotes(channelId, (notes) => [...notes, note], grown)
@@ -2841,6 +3023,33 @@ export const useDawStore = create<DawState>((set, get) => {
           const origin = origins.find((item) => item.id === note.id)
           if (!origin) return note
           return { ...note, velocity: clamp(origin.velocity + shift, MIN_VELOCITY, MAX_VELOCITY) }
+        })
+      )
+    },
+
+    setNoteExtend: (channelId, notes, extendSec) => {
+      if (notes.length === 0) return
+
+      const wanted = clampExtend(extendSec)
+      const ids = new Set(notes.map((note) => note.id))
+
+      pushUndo(`extend:${channelId}:${[...ids].join(',')}`)
+      patchNotes(channelId, (existing) =>
+        existing.map((note) => (ids.has(note.id) ? { ...note, extend: wanted } : note))
+      )
+    },
+
+    adjustExtend: (channelId, origins, deltaSec) => {
+      if (origins.length === 0) return
+
+      // Keyed on which notes are changing, so a run of arrow presses folds into
+      // one step and a later run on the same notes is its own.
+      pushUndo(`extend:${channelId}:${origins.map((note) => note.id).join(',')}`)
+      patchNotes(channelId, (notes) =>
+        notes.map((note) => {
+          const origin = origins.find((item) => item.id === note.id)
+          if (!origin) return note
+          return { ...note, extend: clampExtend(origin.extend + deltaSec) }
         })
       )
     },
@@ -3277,7 +3486,10 @@ export const useDawStore = create<DawState>((set, get) => {
         patternId: state.currentPatternId,
         trackId,
         startBar: bar,
-        lengthBars: pattern.lengthBars
+        lengthBars: pattern.lengthBars,
+        // The shared empty curve, so a clip nobody has drawn one on has a stable
+        // identity to memoise on rather than a fresh array per render.
+        volumeCurve: NO_CURVE
       }
 
       pushUndo(`add-clip:${state.currentPatternId}`)
@@ -3428,6 +3640,33 @@ export const useDawStore = create<DawState>((set, get) => {
       pushUndo(`duplicate-clips:${ids.join(',')}`)
       set((current) => ({ playlistClips: [...current.playlistClips, ...copies], error: null }))
       return copies.map((clip) => clip.id)
+    },
+
+    /**
+     * Replace one clip's volume curve.
+     *
+     * The points are put through `normalizeCurve` here rather than trusted: the
+     * panel hands over whatever it has just computed, and a drag can produce a
+     * curve that is out of order or a node outside 0..1. Normalising at the one
+     * door means everything downstream — the drawing, the scheduler, the file —
+     * can take the curve's shape for granted.
+     *
+     * A set of points that normalises to nothing is written as an empty curve
+     * rather than refused, and an empty curve means "no automation": the clip
+     * goes back to playing at its own volume. It is also what happens after the
+     * last node is deleted, so there is no state where a clip has a curve that
+     * is not a curve.
+     */
+    setClipCurve: (clipId, points, key) => {
+      if (!get().playlistClips.some((clip) => clip.id === clipId)) return
+      const volumeCurve = normalizeCurve(points)
+
+      pushUndo(key ?? `curve:${clipId}`)
+      set((state) => ({
+        playlistClips: state.playlistClips.map((clip) =>
+          clip.id === clipId ? { ...clip, volumeCurve } : clip
+        )
+      }))
     },
 
     /** Add an empty lane at the bottom of the timeline. */

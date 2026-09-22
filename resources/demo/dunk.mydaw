@@ -1,0 +1,171 @@
+{
+  "format": "mydaw",
+  "version": 2,
+  "bpm": 156,
+  "timeSignature": "4/4",
+  "currentPatternId": "21a79f3f-5b36-487c-bdc9-1cd61ff29968",
+  "channels": [
+    {
+      "id": "f83b4c5c-8da3-4bb8-b21c-12a931fcb118",
+      "name": "Soft Piano",
+      "samplePath": "library://piano/soft",
+      "volume": 1,
+      "pan": -0.00266662597656242,
+      "muted": false,
+      "soloed": false,
+      "color": "#6c8cff",
+      "stepCount": 16,
+      "swing": 0
+    }
+  ],
+  "patterns": [
+    {
+      "id": "21a79f3f-5b36-487c-bdc9-1cd61ff29968",
+      "name": "Pattern 1",
+      "lengthBars": 16,
+      "notesByChannel": {
+        "f83b4c5c-8da3-4bb8-b21c-12a931fcb118": [
+          {
+            "id": "9d0db97a-a05e-41f0-8f60-33cd34c2632f",
+            "startSec": 0,
+            "lengthSec": 0.19230769230769232,
+            "pitch": 0,
+            "velocity": 100
+          },
+          {
+            "id": "2e363956-8b62-433e-a7dd-abd8a09cb704",
+            "startSec": 0.19230769230769232,
+            "lengthSec": 0.2884615384615385,
+            "pitch": 2,
+            "velocity": 100
+          },
+          {
+            "id": "d8a2785e-7a80-4f1a-a06f-ff75417d60c5",
+            "startSec": 0.4807692307692308,
+            "lengthSec": 0.2884615384615385,
+            "pitch": 5,
+            "velocity": 100
+          },
+          {
+            "id": "1de58319-99c8-4648-8143-2d51016f7e53",
+            "startSec": 0.7692307692307693,
+            "lengthSec": 0.6730769230769231,
+            "pitch": 9,
+            "velocity": 100
+          },
+          {
+            "id": "1c9f18e7-fbbf-405f-ab83-3aeb0d6691bb",
+            "startSec": 1.4423076923076923,
+            "lengthSec": 0.2884615384615385,
+            "pitch": 0,
+            "velocity": 100
+          },
+          {
+            "id": "a602ec2e-9882-4a14-9441-154051f17959",
+            "startSec": 1.7307692307692308,
+            "lengthSec": 0.38461538461538464,
+            "pitch": 0,
+            "velocity": 100
+          },
+          {
+            "id": "3f26b5ab-29b4-433f-96eb-85a82ccf8d7d",
+            "startSec": 2.307692307692308,
+            "lengthSec": 0.19230769230769232,
+            "pitch": 0,
+            "velocity": 100
+          },
+          {
+            "id": "a64d3a9b-4317-4437-9b5e-7909f642841a",
+            "startSec": 2.5000000000000004,
+            "lengthSec": 0.2884615384615385,
+            "pitch": 2,
+            "velocity": 100
+          },
+          {
+            "id": "35f3c5cb-04aa-4bf0-bee3-843999810ffb",
+            "startSec": 2.7884615384615388,
+            "lengthSec": 0.2884615384615385,
+            "pitch": 5,
+            "velocity": 100
+          },
+          {
+            "id": "767040bc-1caf-4d56-8afe-ff9c5f1ef295",
+            "startSec": 3.076923076923077,
+            "lengthSec": 0.6730769230769231,
+            "pitch": 7,
+            "velocity": 100
+          },
+          {
+            "id": "b4d2ef1f-e052-43ca-8e2f-7d3e7b9e9770",
+            "startSec": 3.7500000000000004,
+            "lengthSec": 0.38461538461538464,
+            "pitch": 0,
+            "velocity": 100
+          }
+        ]
+      },
+      "stepsByChannel": {}
+    }
+  ],
+  "playlistTracks": [
+    {
+      "id": "827817e1-c678-4c86-9bec-36ee9a6f96d5",
+      "name": "Track 1",
+      "muted": false,
+      "soloed": false
+    },
+    {
+      "id": "52aa47e4-4f5e-4004-9a29-fd8e9c256529",
+      "name": "Track 2",
+      "muted": false,
+      "soloed": false
+    },
+    {
+      "id": "df98ae2d-304a-4342-be12-793e111dc2b8",
+      "name": "Track 3",
+      "muted": false,
+      "soloed": false
+    },
+    {
+      "id": "7fbddbff-c947-4e33-9e38-8c4c54759958",
+      "name": "Track 4",
+      "muted": false,
+      "soloed": false
+    },
+    {
+      "id": "da77373b-fff9-4198-9ee5-fbcae930ee98",
+      "name": "Track 5",
+      "muted": false,
+      "soloed": false
+    },
+    {
+      "id": "7d620d49-8f88-44e1-b534-0ce15c690696",
+      "name": "Track 6",
+      "muted": false,
+      "soloed": false
+    },
+    {
+      "id": "0cf02979-f557-466b-8336-762893983e35",
+      "name": "Track 7",
+      "muted": false,
+      "soloed": false
+    },
+    {
+      "id": "56807178-e925-49b0-94f0-deeadeb0df46",
+      "name": "Track 8",
+      "muted": false,
+      "soloed": false
+    }
+  ],
+  "playlistBars": 32,
+  "playlistClips": [
+    {
+      "id": "5e4eea5f-f3d7-42db-9659-fbc84fed37ba",
+      "patternId": "21a79f3f-5b36-487c-bdc9-1cd61ff29968",
+      "trackId": "827817e1-c678-4c86-9bec-36ee9a6f96d5",
+      "startBar": 0,
+      "lengthBars": 3
+    }
+  ],
+  "songStartBar": 0
+}

@@ -796,6 +796,44 @@ body {
   box-shadow: 0 0 6px var(--daw-led);
 }
 
+/* Level meter.
+ *
+ * `--level` and `--peak` are written straight onto this element every frame by
+ * `useChannelLevel` — both are a fraction of full scale, so the bar is that
+ * number of hundredths of the track and the marker sits at it. Nothing here is
+ * animated by CSS: a transition would fight the fall the hook is already doing,
+ * and would go on moving after the sound had stopped.
+ *
+ * The marker is drawn over the fill rather than beside it, and never falls below
+ * it — see the hook — so the two read as one bar with its high-water mark. */
+.channel__meter {
+  position: relative;
+  display: block;
+  height: 3px;
+  margin-top: 4px;
+  border-radius: 1px;
+  background: #2a2a33;
+  overflow: hidden;
+}
+
+.channel__meter::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: calc(var(--level, 0) * 100%);
+  background: var(--daw-led);
+}
+
+.channel__meter::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--peak, 0) * 100%);
+  width: 1px;
+  background: #ffffff;
+}
+
 /* Name (double-click to rename) */
 
 .channel__identity {
@@ -1478,6 +1516,100 @@ body {
   right: 0;
 }
 
+/* The clip's volume curve. A sibling of the clip rather than a child of it, so
+   the two ends of the curve are not cut off by the clip's own overflow — and so
+   that a press on the curve is a press on the curve rather than the start of a
+   clip drag. The outer box is what the panel positions; everything below is the
+   curve's own drawing. */
+
+.pl-curve {
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  /* Only the line and the nodes take the pointer; the rest of the box passes it
+     through to the clip underneath, which is still what drags it. */
+  pointer-events: none;
+}
+
+.pl-curve__body {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* The shape is written as percentages of a 0..100 viewBox stretched over the
+   clip, so the drawing and the hit test below are the same numbers at every
+   zoom. `overflow: visible` lets a node sitting on the clip's own edge draw
+   whole.
+
+   The size is spelled out rather than left to `inset: 0`: an `<svg>` is a
+   replaced element, and the insets do not stretch one — with no width of its
+   own it falls back to the default replaced size instead of the clip's, which
+   draws the curve in a box the nodes are not positioned in. */
+.pl-curve__plot {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+/* Non-scaling strokes: without them the stretch would squash a vertical segment
+   into a hairline and fatten a horizontal one. */
+
+.pl-curve__halo {
+  fill: none;
+  stroke: rgba(15, 18, 36, 0.8);
+  stroke-width: 3px;
+}
+
+.pl-curve__line {
+  fill: none;
+  stroke: #ffffff;
+  stroke-width: 1.5px;
+}
+
+/* The one that is only there to be clicked. A pixel and a half is not something
+   to aim at, so this is the same shape with a target an order of magnitude
+   wider and nothing drawn. */
+.pl-curve__hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14px;
+  pointer-events: stroke;
+  cursor: copy;
+}
+
+.pl-curve__node {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  transform: translate(-50%, -50%);
+  box-sizing: border-box;
+  border: 1.5px solid rgba(15, 18, 36, 0.85);
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.5);
+  pointer-events: auto;
+  cursor: grab;
+  touch-action: none;
+}
+
+.pl-curve__node:hover {
+  background: var(--daw-led);
+}
+
+.pl-curve__body[data-dragging='true'] .pl-curve__node {
+  cursor: grabbing;
+}
+
+/* With the curve over them the note preview becomes two layers of ink in a
+   28-pixel box. The curve is the thing being read, so the notes step back —
+   they are still there, and they come back the moment the switch goes off. */
+.pl-lane[data-curves='true'] .pl-clip__notes {
+  opacity: 0.2;
+}
+
 /* One line for the whole stack rather than one per lane: it is the same moment
    on every track. Below the headers, which are pinned and must stay readable. */
 .pl-playhead {
@@ -1851,35 +1983,88 @@ body {
   color: #0f1224;
 }
 
-/* Four weights on one surface, painted back to front — the earliest layer is the
+/* Eight weights on one surface, painted back to front — the earliest layer is the
    topmost, so a bar line wins over the half-bar under it, the half-bar over the
-   beat under that, and the beat over the subdivision.
+   beat under that, and the beat over the eighth under it, all the way down.
 
-   The three lines that mark the bar's structure — a bar, its half, and its
-   quarter, which is one beat — are set an equal distance apart over the
-   background, and that evenness is the whole mechanism: which one a line is can
-   be read off the line itself instead of counted up from the nearest bar. Move
-   any one of them and the one below it has to move too, or the two close on each
-   other and stop reading as two — the beat line only holds its own as a level
-   while the half-bar stays clear of it.
+   One rung per halving of the bar: the bar, its half, its quarter, and then the
+   fractions the grid is named by — a 1/8, a 1/16, a 1/32, a 1/64. Each is a line
+   of its own rather than one adaptive line, so which level a line belongs to can
+   be read off the line itself however far the roll is zoomed in or out.
+
+   The rungs step down evenly, by the same amount each time, and that evenness is
+   the whole mechanism: a line is sorted into the ladder by how far it stands off
+   the background, so the ladder has to be monotonic and evenly spaced or a rung
+   reads as its neighbour. Move any one of them and the ones around it move too —
+   the beat line only holds its own as a level while the half-bar stays clear of
+   it, and the eighth only while the beat stays clear of that.
+
+   A rung the zoom has left no room for is not drawn at all, and says so through
+   its own line width: the component clears that to nothing, and a zero-length run
+   of colour is no colour, so the layer paints nothing. Each rung's period arrives
+   as its own spacing rather than walked back onto the period of a rung above —
+   see the width variables in `PianoRoll.tsx`, and `RUNG_MIN_GAP_PX` there for
+   which zoom each rung waits for. Being *absent* is the whole of it: a rung
+   merely painted under a rung above is only hidden while the two agree down to
+   the pixel, and a bar width is rarely a whole number, so the two part company by
+   half a pixel often enough to read as a doubled line rather than as no line.
+
+   Only the bar is drawn wider than a pixel. Everything under it is one pixel and
+   steps down by grey alone, because half a pixel is not a fainter line but a
+   rougher one: how much of a line survives a sub-pixel stroke depends on where in
+   the pixel it lands, so a sub-grid of them looks ragged rather than fine. The
+   greys below are the ladder, and they do the whole of the stepping.
 
    Half a bar is a whole number of beats — four to the bar — so the half-bar line
    lands exactly on a beat line rather than between two. It is still a layer of
    its own: painted after the beat layer, it simply covers the line it shares a
-   pixel with, which is the whole point of it.
+   pixel with, which is the whole point of it. It is also the one line besides the
+   bar that no zoom takes away.
 
-   The subdivision is not a fourth step on that ladder but the floor under it. It
-   is the snap grid, so how fine it gets is the zoom's business, and it stays
-   quiet enough that a note can be aimed at over the top of it. */
+   The snap grid is the last layer rather than a rung, and it is the floor under
+   the ladder: it is what a drag lands on. It is drawn on a rung's own terms — the
+   period the roll's zoom asks for, walked back to what fits, and no line at all
+   when even that has left it no room. Every period it can ask for is one of the
+   rungs above, so in practice a rung is drawn over it; it is here for the case
+   where the grid is finer than the finest rung, which is no zoom the roll offers
+   today but is one the divisions themselves allow. */
 .pr-grid {
   position: relative;
   overflow: hidden;
   background-color: #191920;
   background-image:
-    repeating-linear-gradient(to right, #616178 0 1px, transparent 1px var(--pr-bar-w)),
-    repeating-linear-gradient(to right, #4f4f62 0 1px, transparent 1px var(--pr-half-w)),
-    repeating-linear-gradient(to right, #3d3d4c 0 1px, transparent 1px var(--pr-beat-w)),
-    repeating-linear-gradient(to right, #232330 0 1px, transparent 1px var(--pr-cell-w));
+    repeating-linear-gradient(to right, #767691 0 2px, transparent 2px var(--pr-bar-w)),
+    repeating-linear-gradient(to right, #696982 0 1px, transparent 1px var(--pr-half-w)),
+    repeating-linear-gradient(
+      to right,
+      #5d5d73 0 var(--pr-beat-lw),
+      transparent var(--pr-beat-lw) var(--pr-beat-w)
+    ),
+    repeating-linear-gradient(
+      to right,
+      #505063 0 var(--pr-8th-lw),
+      transparent var(--pr-8th-lw) var(--pr-8th-w)
+    ),
+    repeating-linear-gradient(
+      to right,
+      #444454 0 var(--pr-16th-lw),
+      transparent var(--pr-16th-lw) var(--pr-16th-w)
+    ),
+    repeating-linear-gradient(
+      to right,
+      #373745 0 var(--pr-32nd-lw),
+      transparent var(--pr-32nd-lw) var(--pr-32nd-w)
+    ),
+    repeating-linear-gradient(
+      to right,
+      #2b2b36 0 var(--pr-64th-lw),
+      transparent var(--pr-64th-lw) var(--pr-64th-w)
+    ),
+    repeating-linear-gradient(
+      to right,
+      #232330 0 var(--pr-cell-lw),
+      transparent var(--pr-cell-lw) var(--pr-cell-w)
+    );
   cursor: crosshair;
   touch-action: none;
 }
@@ -1952,9 +2137,12 @@ body {
   filter: brightness(1.2);
 }
 
-/* Velocity lane.
+/* Velocity lane, and the notes' tail.
    The gutter, in the same column and with the same sticky treatment as the
-   corner above it, so the readout stays beside the stems it describes. */
+   corner above it, so the readouts stay beside the stems they describe. Two
+   pairs stacked — a label with its figure under it, twice — rather than two
+   boxes side by side: the column is 64px, and a number box sharing a line with
+   its own label would have about three digits of room. */
 .pr__vel-label {
   position: sticky;
   left: 0;
@@ -1977,10 +2165,56 @@ body {
   color: var(--ev-c-text-3);
 }
 
+/* Pushed off the pair above it, so 力度 with its figure reads as one group and
+   the tail as the next, instead of four evenly spaced lines. */
+.pr__vel-title + .pr__extend,
+.pr__vel-value + .pr__vel-title {
+  margin-top: 4px;
+}
+
 .pr__vel-value {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
+}
+
+/* The tail, in milliseconds, for the selected notes.
+   Spinners off: the field is 52px wide, and at that width the arrows would be
+   most of the control and none of the figure. Typing, the arrows and Shift with
+   the arrows all reach the same value. */
+.pr__extend {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 1px 4px;
+  border: 1px solid var(--daw-border);
+  border-radius: 4px;
+  background: #14141a;
+  color: var(--ev-c-text-1);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.pr__extend:focus {
+  border-color: var(--daw-accent);
+  outline: none;
+}
+
+/* Nothing selected is nothing to extend: the field is out of play rather than
+   waiting to be typed into and then ignored. */
+.pr__extend:disabled {
+  opacity: 0.35;
+}
+
+.pr__extend::placeholder {
+  color: var(--ev-c-text-3);
+}
+
+.pr__extend::-webkit-outer-spin-button,
+.pr__extend::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 /* The lane itself, in the grid's own column so a stem lands under its note.

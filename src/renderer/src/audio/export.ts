@@ -6,13 +6,17 @@
 //
 // Graph per channel, mirroring `engine.ts` exactly:
 //
-//   AudioBufferSourceNode -> GainNode -> GainNode -> StereoPannerNode -> master -> destination
-//        (per note)        (velocity)  (channel strip)
+//   AudioBufferSourceNode -> GainNode -> [GainNode] -> GainNode -> StereoPannerNode -> master
+//        (per note)        (velocity)   (curve)    (channel strip)
 //
 // The project has no effect nodes. A channel's chain is a gain and a panner and
 // nothing else, so "wire up the effects" is those two, copied across holding the
 // values they hold right now — which is what makes the export sound like what
-// was on screen.
+// was on screen. A clip's volume curve is the one thing that is not a value but a
+// shape, and it is copied across as a shape: the same `scheduleGainCurve` the
+// live engine calls, so a fade written on the timeline fades the same way in the
+// file. Offline, nothing is heard until the render runs, so the ramps are written
+// against the song's own clock rather than the context's.
 //
 // Nothing in here reads the store: the caller flattens the song into
 // `ExportVoice`s first. That keeps the render the same code whatever the
@@ -20,8 +24,8 @@
 
 import { Mp3Encoder } from '@breezystack/lamejs'
 
-import { gainForVelocity, pitchShiftedBuffer } from './engine'
-import type { Note } from '../types/note'
+import { gainForVelocity, pitchShiftedBuffer, scheduleGainCurve, type SongNote } from './engine'
+import { soundingSec } from '../types/note'
 import { voiceForPitch, type SampleZone } from '../types/sample'
 
 /** What an export is written as. */
@@ -61,8 +65,8 @@ export type ExportVoice = {
   gain: number
   /** -1 to 1. */
   pan: number
-  /** Notes in seconds, from the start of the song. */
-  notes: Note[]
+  /** Notes in seconds, from the start of the song, each carrying its clip's curve. */
+  notes: SongNote[]
 }
 
 export type ExportStage = 'prepare' | 'render' | 'encode'
@@ -156,10 +160,27 @@ export async function renderMix(
       const velocityGain = offline.createGain()
       velocityGain.gain.value = gainForVelocity(note.velocity)
       source.connect(velocityGain)
-      velocityGain.connect(stripGain)
 
+      // The clip's volume curve rides along exactly as it does live — the same
+      // helper, the same ramps — so a fade on the timeline is a fade in the file.
+      // Over the note's own length, as live: the curve is the clip's, and a tail
+      // runs on past where its shape ends.
+      const curve = note.curve
+      const curveOffsetSec = note.curveOffsetSec
+      if (curve !== undefined && curve.length > 0 && curveOffsetSec !== undefined) {
+        const automation = offline.createGain()
+        scheduleGainCurve(automation.gain, curve, curveOffsetSec, note.startSec, note.lengthSec)
+        velocityGain.connect(automation)
+        automation.connect(stripGain)
+      } else {
+        velocityGain.connect(stripGain)
+      }
+
+      // Stopped where the live engine stops it, tail included: a file that cut
+      // every note back to the length it was drawn at would be missing exactly the
+      // decays the tails were added to hear.
       source.start(note.startSec)
-      source.stop(note.startSec + note.lengthSec)
+      source.stop(note.startSec + soundingSec(note))
     }
   }
 

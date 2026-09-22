@@ -10,11 +10,13 @@
 //
 // 这个模块不认识 zustand，也不认识 React：它只会在 `DawState` 和一段 JSON 之间翻译。
 
+import { MAX_CURVE_VALUE, MIN_CURVE_VALUE, normalizeCurve, type CurvePoint } from './curve'
 import {
   clampLengthBars,
   DEFAULT_BPM,
   DEFAULT_LENGTH_BARS,
   DEFAULT_VELOCITY,
+  MAX_EXTEND_SEC,
   type Note
 } from './note'
 import {
@@ -49,10 +51,10 @@ export const PROJECT_FORMAT = 'mydaw'
  * 轨道回落成默认的几条、clip 的 trackId 回落到第一条轨、长度回落到最小值，都在下面的
  * 兜底里发生。
  *
- * 之后加字段（比如 clip 可以落在小节中间、播放起点 `songStartBar`）没有再动版本号：
- * 没有哪个字段换了形状，新字段都走逐字段兜底。代价说清楚——用这一版存出来的文件，被
- * 更老的版本打开时，片段会被四舍五入回整小节、播放起点会被丢掉，属于「能打开但缺东西」，
- * 而不是打不开。
+ * 之后加字段（比如 clip 可以落在小节中间、播放起点 `songStartBar`、片段自己的音量曲线
+ * `volumeCurve`）没有再动版本号：没有哪个字段换了形状，新字段都走逐字段兜底。代价说清楚
+ * ——用这一版存出来的文件，被更老的版本打开时，片段会被四舍五入回整小节、播放起点和曲线
+ * 会被丢掉，属于「能打开但缺东西」，而不是打不开。
  *
  * 删字段同样没动版本号。`playMode`（Pattern / Song 那个开关）不存在了：空格播什么由
  * 鼠标所在的窗口决定，没有东西可切换。老文件里多出来的这个字段读的时候被忽略，所以
@@ -301,6 +303,8 @@ function parseNotesByChannel(value: unknown): Record<string, Note[]> {
       // 负的开始时间或长度没有意义，而播放调度是按它们算的。
       startSec: Math.max(0, num(note.startSec, 0)),
       lengthSec: Math.max(0, num(note.lengthSec, 0)),
+      // 没有这个字段的工程是延长量出现之前存的，读回来就是 0 —— 也正是「不延长」。
+      extend: clamp(num(note.extend, 0), 0, MAX_EXTEND_SEC),
       pitch: num(note.pitch, 0),
       velocity: clamp(num(note.velocity, DEFAULT_VELOCITY), 0, 127)
     }))
@@ -359,6 +363,9 @@ function parseTracks(value: unknown): PlaylistTrack[] {
  * ——那是唯一没有意义的长度。位置和长度都**不取整**：关掉吸附以后片段本来就落在小节中间，
  * 取整会把用户摆好的东西挪走。v1 文件没有 `trackId`，文件也可能写了一条已经不在的轨道，
  * 两种都落到第一条轨上，也就是它们本来在的地方。
+ *
+ * `volumeCurve` 没有的文件读回来是一个空数组，也就是「没有自动化」——那时候显示和播放都
+ * 按节拍里的音符力度现算一条默认曲线，所以少这个字段的老工程看起来和新的一样。
  */
 function parseClips(value: unknown, tracks: PlaylistTrack[]): PlaylistClip[] {
   if (!Array.isArray(value)) return []
@@ -376,8 +383,32 @@ function parseClips(value: unknown, tracks: PlaylistTrack[]): PlaylistClip[] {
       patternId,
       trackId: tracks.some((track) => track.id === trackId) ? trackId : fallbackTrackId,
       startBar: Math.max(0, num(entry.startBar, 0)),
-      lengthBars: Math.max(MIN_CLIP_LENGTH_BARS, num(entry.lengthBars, 1))
+      lengthBars: Math.max(MIN_CLIP_LENGTH_BARS, num(entry.lengthBars, 1)),
+      volumeCurve: parseCurve(entry.volumeCurve)
     })
   }
   return clips
+}
+
+/**
+ * 一段片段的音量曲线。
+ *
+ * 读得动几个点是几个点：一条曲线少一个节点还是一条能播的曲线，而整个片段因为一个坏的
+ * 节点就没了音量才是真的丢东西。时间统一夹到不小于 0，值夹进 0..1——曲线的两个轴都是有
+ * 界的，界外的东西画不出来也播不出来。
+ *
+ * `normalizeCurve` 顺手把顺序理好：曲线的点必须按时间升序，播放那边是按顺序写增益的。
+ */
+function parseCurve(value: unknown): CurvePoint[] {
+  if (!Array.isArray(value)) return []
+
+  const points: CurvePoint[] = []
+  for (const entry of value) {
+    if (!isRecord(entry)) continue
+    points.push({
+      time: Math.max(0, num(entry.time, 0)),
+      value: clamp(num(entry.value, MAX_CURVE_VALUE), MIN_CURVE_VALUE, MAX_CURVE_VALUE)
+    })
+  }
+  return normalizeCurve(points)
 }
