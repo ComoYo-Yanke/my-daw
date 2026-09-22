@@ -1444,7 +1444,7 @@ function auditionNote(params: SynthParams, pitch = 0): Note {
 }
 
 /**
- * The curve a clip actually plays and draws with.
+ * The curve a clip draws.
  *
  * Its own if it has one, and otherwise one read off the pattern's note
  * velocities. Deriving rather than materialising is what makes turning the curve
@@ -1452,6 +1452,14 @@ function auditionNote(params: SynthParams, pitch = 0): Note {
  * is marked unsaved and nothing lands on the undo stack — and editing a
  * velocity changes the default curve, which is what "the default comes from the
  * velocities" has to mean to be worth anything.
+ *
+ * **Drawn with, not played with.** The fallback is a picture of the velocities,
+ * and the velocities are already what plays: the scheduler writes each note's own
+ * velocity as a gain, so a player that took this curve as well would multiply the
+ * two together and count the velocity twice — which is what `selectSongTimeline`
+ * used to do, and what makes this comment worth the paragraph. Anything that
+ * decides how a note *sounds* wants `clip.volumeCurve`, the curve that was
+ * actually drawn, and nothing at all when there is none.
  *
  * Both being empty is "no automation": the clip plays at the volume it always
  * did. That happens when the pattern has no notes to read one off.
@@ -1511,12 +1519,16 @@ export type SongTimeline = {
  * tempo and every second value halves, which is what keeps the notes where they
  * were drawn rather than sliding towards the front of the clip.
  *
- * Each note leaves with the volume curve of the clip it came from attached, plus
- * where inside that clip it sits. The curve is a shape rather than a level, so it
- * cannot be resolved here and applied to a strip; it has to reach the scheduler,
- * which is the only thing that can write it as gain over time. Note velocities
- * ride along the same way they always did — a note's own velocity and its clip's
- * automation are two separate things that multiply.
+ * Each note leaves with the stored volume curve of the clip it came from attached,
+ * plus where inside that clip it sits. The curve is a shape rather than a level, so
+ * it cannot be resolved here and applied to a strip; it has to reach the scheduler,
+ * which is the only thing that can write it as gain over time. A clip that has
+ * stored no curve sends none, which is not the same as sending a flat one: no
+ * automation leaves the note's own velocity as the only thing shaping it, which is
+ * exactly how the piano roll plays the same notes.
+ *
+ * Note velocities ride along the same way they always did — a note's own velocity
+ * and its clip's automation are two separate things that multiply.
  */
 export function selectSongTimeline(state: DawState, bpm: number = state.bpm): SongTimeline {
   const { playlistClips, playlistTracks, patterns } = state
@@ -1545,11 +1557,22 @@ export function selectSongTimeline(state: DawState, bpm: number = state.bpm): So
     bars = Math.max(bars, clip.startBar + clip.lengthBars)
     const clipEndBar = clip.startBar + clip.lengthBars
 
-    // The clip's volume curve, told to every note it is about to contribute.
-    // Measured in the same seconds the notes are — seconds written at the
-    // project's own tempo — so it scales by the same ratio and stays over the
-    // same part of the clip however the song is being rendered.
-    const curve = clipCurve(clip.volumeCurve, pattern, patternBarSec, clip.lengthBars)
+    // The clip's own volume curve, and only its own: told to every note it is
+    // about to contribute, measured in the same seconds the notes are — seconds
+    // written at the project's own tempo — so it scales by the same ratio and
+    // stays over the same part of the clip however the song is being rendered.
+    //
+    // Deliberately not `clipCurve`, which falls back to a curve read off the note
+    // velocities when the clip has stored none. That fallback is for drawing —
+    // see `clipCurve` — and playing it here applies the velocity twice: once as
+    // the note's own velocity gain, which the scheduler writes for every note
+    // whatever else is going on, and again as this curve, which is a re-encoding
+    // of those very numbers. A note at velocity 100 came out at (100/127)²
+    // instead of 100/127, so a clip with no automation played 21% quieter in the
+    // song than the same notes play in the piano roll, and quieter than its own
+    // drawn curve said it would. No curve is no automation, and no automation is
+    // the note's velocity on its own.
+    const curve = clip.volumeCurve
     const timedCurve =
       noteSecScale === 1
         ? curve
