@@ -46,6 +46,21 @@ function App(): React.JSX.Element {
   const stopSequence = useDawStore((state) => state.stopSequence)
   const masterVolume = useDawStore((state) => state.masterVolume)
   const setMasterVolume = useDawStore((state) => state.setMasterVolume)
+  const metronomeEnabled = useDawStore((state) => state.metronomeEnabled)
+  const toggleMetronome = useDawStore((state) => state.toggleMetronome)
+  const startMetronome = useDawStore((state) => state.startMetronome)
+  const stopMetronome = useDawStore((state) => state.stopMetronome)
+  /**
+   * The transport, read as the two facts the metronome follows it by.
+   *
+   * Which mode it is and when it started, rather than the playback object: the
+   * object is a new one whenever anything about the transport changes, and the
+   * metronome has no business restarting its count over a change that did not
+   * move a beat. These two are what its clicks depend on, so these two are what
+   * it is keyed on.
+   */
+  const playbackMode = useDawStore((state) => state.playback?.mode ?? null)
+  const playbackStartedAtSec = useDawStore((state) => state.playback?.startedAtSec ?? null)
   const undo = useDawStore((state) => state.undo)
   const openProject = useDawStore((state) => state.openProject)
   const saveProject = useDawStore((state) => state.saveProject)
@@ -232,6 +247,22 @@ function App(): React.JSX.Element {
     saveProject
   ])
 
+  /**
+   * The metronome, tied to the transport from outside it.
+   *
+   * Kept here rather than inside each of the four ways a transport can start,
+   * because there are four of them and they have nothing else in common — this
+   * way there is one place that knows the click follows playback, and a fifth
+   * transport added later gets it without being told. The cleanup is what stops
+   * it: the same effect ends when the transport does, when the switch is turned
+   * off, and when the window goes away.
+   */
+  useEffect(() => {
+    if (!metronomeEnabled || playbackMode === null || playbackStartedAtSec === null) return
+    startMetronome(playbackStartedAtSec)
+    return () => stopMetronome()
+  }, [metronomeEnabled, playbackMode, playbackStartedAtSec, startMetronome, stopMetronome])
+
   return (
     <div className="daw">
       <header className="toolbar">
@@ -239,6 +270,17 @@ function App(): React.JSX.Element {
         <FileMenu />
         <WindowMenu />
         <BpmField />
+        {/* Next to the tempo, because that is what it follows — and it says so:
+            the click moves the moment the BPM does. */}
+        <button
+          type="button"
+          className="toolbar__button toolbar__button--click"
+          aria-pressed={metronomeEnabled}
+          onClick={toggleMetronome}
+          title="跟着速度响的节拍器：每小节第一拍是重音，只在走带播放时响，也不会被导出"
+        >
+          节拍器
+        </button>
         <button
           type="button"
           className="toolbar__button"

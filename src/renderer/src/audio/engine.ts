@@ -343,6 +343,71 @@ export function setMasterGain(value: number): void {
 }
 
 /**
+ * The metronome click: two pitches, so which beat of the bar it is can be heard
+ * rather than counted.
+ *
+ * Goes straight to the master gain and not through a channel strip. A strip is a
+ * channel's — it carries that channel's volume, pan, mute, solo and effect chain
+ * — and the click belongs to none of them: it has to stay audible while every
+ * channel is muted, and turning a reverb up must not put a reverb on it. What it
+ * does go through is the app's own output level, which is the level the whole
+ * mix is monitored at and so is exactly the right one for a monitoring sound.
+ *
+ * Built per click rather than kept as one node that is retriggered, because the
+ * two ends of the bar are two different pitches and an `OscillatorNode`'s
+ * frequency cannot be scheduled ahead of time on a node that is already running.
+ * A click is two nodes and about thirty milliseconds of signal; at four clicks a
+ * bar and the slowest tempo the roll reaches, that is a handful per second.
+ *
+ * `atSec` is an absolute `AudioContext.currentTime`, so this is scheduled ahead
+ * of the clock and never fired from a timer.
+ *
+ * The oscillator comes back so that a click reserved ahead of the clock can still
+ * be called off. Turning the metronome off has to stop the next click as well as
+ * the ones after it, and a click that has been handed to the audio clock is past
+ * the point where forgetting about it would be enough.
+ */
+export function scheduleMetronomeClick(atSec: number, accent: boolean): OscillatorNode {
+  const context = getAudioContext()
+
+  const oscillator = context.createOscillator()
+  const envelope = context.createGain()
+
+  const lengthSec = accent ? METRONOME_ACCENT_SEC : METRONOME_BEAT_SEC
+  const level = accent ? METRONOME_ACCENT_GAIN : METRONOME_BEAT_GAIN
+
+  oscillator.type = 'triangle'
+  oscillator.frequency.setValueAtTime(accent ? METRONOME_ACCENT_HZ : METRONOME_BEAT_HZ, atSec)
+
+  // A click is an attack and a decay and nothing between them: straight up in
+  // two milliseconds so it reads as a tick rather than a beep, then an
+  // exponential fall. The exponential ramp cannot reach zero, so it lands on a
+  // value small enough to be silence and the node is stopped just after it.
+  envelope.gain.setValueAtTime(0, atSec)
+  envelope.gain.linearRampToValueAtTime(level, atSec + METRONOME_ATTACK_SEC)
+  envelope.gain.exponentialRampToValueAtTime(0.0001, atSec + lengthSec)
+
+  oscillator.connect(envelope)
+  envelope.connect(getMasterGain())
+
+  oscillator.start(atSec)
+  oscillator.stop(atSec + lengthSec + 0.01)
+
+  return oscillator
+}
+
+/** The two pitches a click can be: the bar's first beat, and the rest of them. */
+const METRONOME_ACCENT_HZ = 1600
+const METRONOME_BEAT_HZ = 1000
+/** How loud each of them is. The accent is the one that has to carry. */
+const METRONOME_ACCENT_GAIN = 0.5
+const METRONOME_BEAT_GAIN = 0.3
+/** How long each rings for, and how long the attack takes. */
+const METRONOME_ACCENT_SEC = 0.06
+const METRONOME_BEAT_SEC = 0.04
+const METRONOME_ATTACK_SEC = 0.002
+
+/**
  * Register a voice on a strip, so the channel indicator and `stopStrip` see it.
  *
  * `onFinished` is passed for the last voice of a sequence only: its `onended`

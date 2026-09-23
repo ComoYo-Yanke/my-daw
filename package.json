@@ -1,9 +1,9 @@
 {
   "name": "my-daw",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "个人自用的桌面 DAW，工作流对齐 FL Studio",
   "main": "./out/main/index.js",
-  "author": "example.com",
+  "author": "CoMoYo-Yanke",
   "homepage": "https://electron-vite.org",
   "scripts": {
     "format": "prettier --write .",

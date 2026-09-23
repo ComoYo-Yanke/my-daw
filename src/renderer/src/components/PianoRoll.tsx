@@ -33,6 +33,7 @@ import {
   isBlackKey,
   nextLengthBars,
   noteName,
+  pitchClass,
   pitchForRow,
   rowForPitch,
   secondsPerBar,
@@ -1308,7 +1309,9 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
               onContextMenu={(event) => event.preventDefault()}
             >
               {/* One stripe per key row, so the black keys read as black keys and
-                  the grid keeps telling the same story as the keyboard. */}
+                  the grid keeps telling the same story as the keyboard. Every C
+                  is marked as well, which is the line an octave is counted
+                  from — the keyboard marks the same one. */}
               <div className="pr-rows" aria-hidden="true">
                 {Array.from({ length: PIANO_KEY_COUNT }, (_, row) => {
                   const pitch = pitchForRow(row)
@@ -1318,16 +1321,16 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
                       className="pr-row"
                       data-black={isBlackKey(pitch)}
                       data-root={pitch === 0}
+                      data-octave={pitchClass(pitch) === 0}
                       style={{ height: `${keyPx}px` }}
                     />
                   )
                 })}
               </div>
 
-              {/* The room the pattern grows into, dimmed, with the pattern's own
-                  end as its left edge. Over the lanes and under the notes: a note
-                  put here is an ordinary note, and it is the *pattern* that is
-                  about to change, not the note. */}
+              {/* The room the pattern grows into, dimmed. Over the lanes and
+                  under the grid lines: a note put here is an ordinary note, and
+                  it is the *pattern* that is about to change, not the note. */}
               {renderBars > lengthBars && (
                 <div
                   className="pr-grid__beyond"
@@ -1338,6 +1341,19 @@ function PianoRoll({ channel, sample }: PianoRollProps): React.JSX.Element {
                   }}
                 />
               )}
+
+              {/* The vertical grid, over everything above and under the notes.
+                  Its own element so that neither the lane shading nor the dimmed
+                  strip can change how a line looks: see `.pr-grid__lines`. */}
+              <div className="pr-grid__lines" aria-hidden="true" />
+
+              {/* Where the pattern stops, on the far side of those lines — the
+                  one mark here that is not part of the grid. */}
+              <div
+                className="pr-grid__end"
+                aria-hidden="true"
+                style={{ left: `${lengthBars * barPx}px` }}
+              />
 
               {notes.map((note) => {
                 const rect = rectForNote(note)

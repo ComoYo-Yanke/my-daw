@@ -8,6 +8,7 @@ import {
   releaseAllStrips,
   releaseStrip,
   resumeAudioContext,
+  scheduleMetronomeClick,
   scheduleNoteSequence,
   setMasterGain,
   setStripEffects,
@@ -43,6 +44,7 @@ import { singleZone, voiceForPitch, type SampleZone } from '../types/sample'
 import { parseProjectFile, serializeProject, type ProjectFile } from '../types/project'
 import { curveFromNotes, NO_CURVE, normalizeCurve, type CurvePoint } from '../types/curve'
 import {
+  BEATS_PER_BAR,
   clampLengthBars,
   clampNoteLength,
   clampNoteStart,
@@ -61,6 +63,7 @@ import {
   MIN_VELOCITY,
   minNoteSec,
   secondsPerBar,
+  secondsPerBeat,
   secondsPerGrid,
   sequenceSec,
   snapSec,
@@ -555,10 +558,36 @@ export type DawState = {
   masterVolume: number
   /** Project tempo, in beats per minute. Everything timed follows it. */
   bpm: number
+  /**
+   * Whether the metronome clicks while a transport runs.
+   *
+   * A way of listening rather than something in the song, so it sits beside
+   * `masterVolume` and not in the project: it is neither saved nor exported, and
+   * switching it on does not make the project dirty. The click itself is never
+   * rendered — the exporter lays out notes and has no idea this exists.
+   */
+  metronomeEnabled: boolean
 
   setBpm: (bpm: number) => void
   /** Turn the app's own output down, or back up. Not an undo step: no edit. */
   setMasterVolume: (value: number) => void
+  /**
+   * Turn the click on or off.
+   *
+   * Starting and stopping the clicks themselves belongs to the effect that
+   * watches the transport, so that switching this on mid-playback starts
+   * clicking on the next beat instead of wherever a stale counter had got to.
+   */
+  toggleMetronome: () => void
+  /**
+   * Start clicking, counting beats from `startedAtSec`.
+   *
+   * The anchor is the transport's own start rather than the moment this is
+   * called, which is what makes the bar's first beat land on the accent no
+   * matter how late the click is switched on.
+   */
+  startMetronome: (startedAtSec: number) => void
+  stopMetronome: () => void
   /** Take back the last edit, across every kind of edit the store has. */
   undo: () => void
   importSamples: () => Promise<void>
@@ -1259,6 +1288,39 @@ type StepLoop = {
  * next one rather than at the end of the pattern.
  */
 const PIANO_ROLL_LOOKAHEAD_SEC = 0.5
+
+/**
+ * How far ahead of the audio clock the metronome reserves, in seconds.
+ *
+ * Shorter than either note reservation by a long way, because there is nothing
+ * here to work out: a beat is one multiply away from the one before it, so the
+ * only reason to run ahead at all is to hand the audio clock an exact time
+ * rather than "whenever the next frame happens to be". A fifth of a second is a
+ * dozen frames at any refresh rate, which is as much slack as an exact time
+ * needs.
+ */
+const METRONOME_LOOKAHEAD_SEC = 0.2
+
+/**
+ * The running metronome, or null. One at a time, like the step loop.
+ *
+ * Not a transport of its own — it has no notes, no length and no channel, and
+ * nothing is played when it is the only thing running. It counts the beats of
+ * whatever transport is running, which is why nothing about it asks what mode
+ * that transport is in.
+ */
+type MetronomeLoop = {
+  frame: number
+  /** Which beat of the transport the next click is, counting from its start. */
+  nextBeat: number
+  /** Audio-clock time that beat falls at. */
+  nextBeatAtSec: number
+  /**
+   * The clicks handed to the clock that have not been heard yet, with the time
+   * each is due at — kept only so that stopping can take them back.
+   */
+  pending: { atSec: number; oscillator: OscillatorNode }[]
+}
 
 /**
  * How many reserved bars the cursor remembers.
@@ -2288,6 +2350,80 @@ export const useDawStore = create<DawState>((set, get) => {
   }
 
   /**
+   * The running metronome, or null. One at a time, like the other two.
+   */
+  let metronomeLoop: MetronomeLoop | null = null
+
+  const stopMetronomeLoop = (): void => {
+    if (metronomeLoop === null) return
+    cancelAnimationFrame(metronomeLoop.frame)
+    // And the clicks already reserved, which cancelAnimationFrame cannot reach:
+    // they were handed to the audio clock, so dropping the loop would leave the
+    // next one to sound up to a lookahead after the switch was turned off.
+    // Stopping a node that has already played is not an error — it is the node's
+    // own stop time being replaced by "now", which is in the past for it.
+    for (const click of metronomeLoop.pending) click.oscillator.stop()
+    metronomeLoop = null
+  }
+
+  /**
+   * Hand the audio clock every beat that falls inside the lookahead window.
+   *
+   * Every mode this app can run starts on a beat at the project tempo and starts
+   * at `playback.startedAtSec`, so counting beats from there is already on the
+   * beat in all of them — the step loop's first step, a pattern's first note, a
+   * song's first bar and the piano roll's cursor are each of them beat one of
+   * something. That is the whole of why there is no mode here to branch on.
+   *
+   * The tempo is read fresh on each beat rather than once at the start, so a BPM
+   * dragged while the transport runs is followed from the next beat on. Same rule
+   * as the two note reservations, and for the same reason: the time already
+   * handed to the clock is fixed and cannot be moved.
+   */
+  const reserveBeats = (): void => {
+    const loop = metronomeLoop
+    if (loop === null) return
+
+    const beatSec = secondsPerBeat(get().bpm)
+    const nowSec = getAudioContext().currentTime
+
+    // Woken up late — the window was hidden, or a frame ran long. The beat
+    // counter is walked forward to the first beat that has not been heard yet
+    // rather than reset to zero, because it is the count from the transport's
+    // start that decides which click is the accented one: resetting it would
+    // put a bar line wherever the stall happened to fall.
+    if (loop.nextBeatAtSec < nowSec) {
+      const missed = Math.ceil((nowSec - loop.nextBeatAtSec) / beatSec)
+      loop.nextBeat += missed
+      loop.nextBeatAtSec += missed * beatSec
+    }
+
+    // Beats that have already sounded are of no further interest, and at one or
+    // two reservations a tick this is what keeps the list from growing.
+    if (loop.pending.length > 0) {
+      loop.pending = loop.pending.filter((click) => click.atSec > nowSec)
+    }
+
+    const horizonSec = nowSec + METRONOME_LOOKAHEAD_SEC
+    while (loop.nextBeatAtSec < horizonSec) {
+      loop.pending.push({
+        atSec: loop.nextBeatAtSec,
+        oscillator: scheduleMetronomeClick(loop.nextBeatAtSec, loop.nextBeat % BEATS_PER_BAR === 0)
+      })
+      loop.nextBeat += 1
+      loop.nextBeatAtSec += beatSec
+    }
+  }
+
+  const tickMetronome = (): void => {
+    if (metronomeLoop === null) return
+    reserveBeats()
+    if (metronomeLoop !== null) {
+      metronomeLoop.frame = requestAnimationFrame(tickMetronome)
+    }
+  }
+
+  /**
    * Ask before throwing away unsaved work. True means "carry on".
    *
    * A project is a lot of work to lose to a stray click on 新建, and the answer
@@ -2490,6 +2626,9 @@ export const useDawStore = create<DawState>((set, get) => {
     pianoRollTool: 'draw',
     playback: null,
     masterVolume: 1,
+    // Off to begin with: an app that starts clicking at you the first time you
+    // press play is worse than one you have to ask.
+    metronomeEnabled: false,
     bpm: DEFAULT_BPM,
 
     /**
@@ -2560,6 +2699,37 @@ export const useDawStore = create<DawState>((set, get) => {
       const next = clamp(value, 0, 1)
       setMasterGain(next)
       set({ masterVolume: next })
+    },
+
+    toggleMetronome: () => {
+      set((state) => ({ metronomeEnabled: !state.metronomeEnabled }))
+    },
+
+    /**
+     * Start clicking.
+     *
+     * The count is taken from the transport's own start rather than from zero,
+     * so switching the click on part way through a bar picks the bar up where it
+     * is: the accent still falls on the bar line and the count does not restart
+     * under the music. That also makes switching it on mid-playback and having
+     * it on from the beginning arrive at the same clicks.
+     */
+    startMetronome: (startedAtSec) => {
+      stopMetronomeLoop()
+      const beatSec = secondsPerBeat(get().bpm)
+      const elapsedSec = Math.max(0, getAudioContext().currentTime - startedAtSec)
+      const beats = Math.ceil(elapsedSec / beatSec)
+      metronomeLoop = {
+        frame: 0,
+        nextBeat: beats,
+        nextBeatAtSec: startedAtSec + beats * beatSec,
+        pending: []
+      }
+      tickMetronome()
+    },
+
+    stopMetronome: () => {
+      stopMetronomeLoop()
     },
 
     /**

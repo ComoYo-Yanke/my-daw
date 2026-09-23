@@ -317,6 +317,19 @@ body {
   color: #0f1224;
 }
 
+/* The metronome, lit while it is clicking. Filled rather than outlined, because
+   it is a sound and not a view: the outline the other switches share reads as
+   "this panel is open", and this one has to read as "this is ticking". */
+.toolbar__button--click[aria-pressed='true'] {
+  border-color: transparent;
+  background: var(--daw-accent);
+  color: #0f1224;
+}
+
+.toolbar__button--click[aria-pressed='true']:hover:not(:disabled) {
+  background: #87a1ff;
+}
+
 /* File menu */
 
 .file-menu {
@@ -2073,6 +2086,29 @@ body {
   position: relative;
   overflow: hidden;
   background-color: #191920;
+  cursor: crosshair;
+  touch-action: none;
+}
+
+/* The vertical grid: bars, halves, beats, and a rung at every subdivision the
+   zoom has left room for.
+
+   A layer of its own rather than the grid's background image, so that it paints
+   over the lane shading and over the dimmed strip past the pattern's end instead
+   of under them. Those two are what made one vertical line look unlike the next
+   one — a black-key band dims every line crossing it, and the strip past the end
+   dims all of them — and both of them move under the pointer: the bands with the
+   keyboard zoom, the strip with the pattern's length. A line here belongs to the
+   time axis and to nothing else: how wide it is, how bright it is and whether it
+   is drawn at all are decided by the horizontal zoom alone, which is what this
+   layer is here to guarantee.
+
+   It is still the rows underneath that say which lane is a black key and where
+   the pattern stops. What moved is the lines that cross them. */
+.pr-grid__lines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
   background-image:
     repeating-linear-gradient(to right, #767691 0 2px, transparent 2px var(--pr-bar-w)),
     repeating-linear-gradient(to right, #696982 0 1px, transparent 1px var(--pr-half-w)),
@@ -2106,24 +2142,36 @@ body {
       #232330 0 var(--pr-cell-lw),
       transparent var(--pr-cell-lw) var(--pr-cell-w)
     );
-  cursor: crosshair;
-  touch-action: none;
 }
 
 /* The length past the pattern's end: the room it would grow into.
 
    Dimmed rather than left as more grid, because it is not more pattern — a note
    dropped here changes the pattern's length, and a surface that looks identical
-   to the rest would say otherwise. The left edge is the pattern's own end, which
-   is why it is drawn here rather than as a separate line: there is no second
-   place for it to be. */
+   to the rest would say otherwise. Under the grid lines, so that the dimming says
+   where the pattern stops without also deciding how the lines in there look. */
 .pr-grid__beyond {
   position: absolute;
   top: 0;
   bottom: 0;
-  box-sizing: border-box;
-  border-left: 2px solid #6c8cff;
   background: rgba(12, 12, 18, 0.55);
+  pointer-events: none;
+}
+
+/* The pattern's own end, drawn on the far side of the grid lines.
+
+   This used to be the left border of the strip above, which was fine while the
+   lines were underneath it. With the lines on top, the bar line landing on that
+   same pixel would paint over it and the end of the pattern would have gone grey.
+   So the boundary is its own mark now — and it is above the lines because it is
+   the one thing on this grid that is not a line of the grid: it says where the
+   pattern stops, which no amount of zoom moves. */
+.pr-grid__end {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #6c8cff;
   pointer-events: none;
 }
 
@@ -2146,6 +2194,22 @@ body {
 
 .pr-row[data-root='true'] {
   background: rgba(108, 140, 255, 0.09);
+}
+
+/* One line across every octave, at the top of each C.
+
+   The keyboard beside the grid is the same five octaves drawn as keys, and this
+   is what makes the two read as one thing: without it the lanes are sixty-one
+   even stripes with nothing to count up from, and how far a note sits from the
+   sample's own pitch has to be worked out key by key.
+
+   Brighter than the per-semitone rule beside it and dimmer than a bar line, so it
+   groups the lanes without competing with the grid's own bars.
+
+   A top border and not a bottom one: on this axis C is the *top* of its octave —
+   the keys run B, C downwards — so the boundary is the C's upper edge. */
+.pr-row[data-octave='true'] {
+  border-top: 1px solid #41415a;
 }
 
 .pr-row:last-child {
